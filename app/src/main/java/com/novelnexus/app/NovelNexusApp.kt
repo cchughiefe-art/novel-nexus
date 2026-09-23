@@ -15,7 +15,7 @@ class NovelNexusApp : Application() {
 
     override fun onCreate() {
         super.onCreate()
-        val http = HttpClient()
+        val http = HttpClient(this)
         val db = NovelDatabase(this)
         val registry = SourceRegistry(
             listOf(

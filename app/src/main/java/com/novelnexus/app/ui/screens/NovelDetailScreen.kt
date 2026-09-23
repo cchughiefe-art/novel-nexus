@@ -139,11 +139,15 @@ fun NovelDetailScreen(
     }
 
     val filtered = remember(item.chapters, chapterFilter) {
-        if (chapterFilter.isBlank()) item.chapters
-        else item.chapters.filter {
-            it.title.contains(chapterFilter, ignoreCase = true) ||
-                (it.index + 1).toString() == chapterFilter.trim()
+        val matching = if (chapterFilter.isBlank()) {
+            item.chapters
+        } else {
+            item.chapters.filter {
+                it.title.contains(chapterFilter, ignoreCase = true) ||
+                    (it.index + 1).toString() == chapterFilter.trim()
+            }
         }
+        matching.sortedByDescending { it.index }
     }
 
     val resumeChapter = progress?.let { saved ->

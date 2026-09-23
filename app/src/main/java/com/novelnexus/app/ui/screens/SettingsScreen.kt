@@ -93,7 +93,7 @@ fun SettingsScreen(graph: AppGraph) {
             ) {
                 Icon(Icons.Rounded.Info, null, tint = MaterialTheme.colorScheme.primary)
                 Column {
-                    Text("Novel Nexus 0.2.0", fontWeight = FontWeight.Bold)
+                    Text("Novel Nexus 0.2.2", fontWeight = FontWeight.Bold)
                     Text(
                         "Reader-first Android build. Source availability depends on each website.",
                         color = MaterialTheme.colorScheme.onSurfaceVariant
