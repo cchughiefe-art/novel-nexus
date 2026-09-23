@@ -1,4 +1,4 @@
-# NovelAtlas Android
+# Novel Nexus Android
 
 A native Android multi-source novel reader built for approved direct-retrieval sources. It uses Kotlin + Jetpack Compose and keeps source-specific retrieval code behind a plugin-style `NovelSource` interface.
 
@@ -38,14 +38,14 @@ In GitHub:
 2. Open **Build Android APK**.
 3. Run the workflow or push a commit.
 4. When it succeeds, open the build run.
-5. Download the `NovelAtlas-debug-apk` artifact.
+5. Download the `Novel-Nexus-debug-apk` artifact.
 
 The APK inside the artifact is `app-debug.apk` and is signed with the Android debug key by the GitHub runner, so it can be installed for testing.
 
 ## Local structure
 
 ```text
-app/src/main/java/com/novelatlas/app/
+app/src/main/java/com/novelnexus/app/
 ├── core/
 │   ├── model/
 │   ├── network/
@@ -67,6 +67,6 @@ app/src/main/java/com/novelatlas/app/
 
 ## Important retrieval note
 
-Websites change. Each source is isolated so a provider selector change only requires updating that provider adapter. The app does not depend on a remote NovelAtlas backend.
+Websites change. Each source is isolated so a provider selector change only requires updating that provider adapter. The app does not depend on a remote Novel Nexus backend.
 
 LightNovelPub has historically changed hosts/protection behavior. Its adapter therefore uses multiple selector/search fallbacks and surfaces a source-specific error rather than taking down the whole app.

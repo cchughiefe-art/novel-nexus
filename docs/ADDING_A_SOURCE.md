@@ -1,12 +1,12 @@
 # Adding a new novel source
 
-NovelAtlas deliberately keeps every website behind `NovelSource`. The reader, downloader, database and navigation do not know site-specific selectors.
+Novel Nexus deliberately keeps every website behind `NovelSource`. The reader, downloader, database and navigation do not know site-specific selectors.
 
 ## 1. Create one adapter
 
 Create a package under:
 
-`app/src/main/java/com/novelatlas/app/source/<site>/`
+`app/src/main/java/com/novelnexus/app/source/<site>/`
 
 Implement:
 
@@ -28,7 +28,7 @@ If a site has no latest/popular endpoint, set `supportsLatest = false` or `suppo
 
 ## 2. Register it
 
-In `NovelAtlasApp.kt`, add one line to the `SourceRegistry` list:
+In `NovelNexusApp.kt`, add one line to the `SourceRegistry` list:
 
 ```kotlin
 ExampleSource(http)
