@@ -1,6 +1,8 @@
 package com.novelnexus.app.ui.screens
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -13,9 +15,11 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.ArrowBack
+import androidx.compose.material.icons.rounded.ArrowForward
 import androidx.compose.material.icons.rounded.Palette
 import androidx.compose.material.icons.rounded.Remove
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -41,13 +45,20 @@ import androidx.compose.ui.unit.sp
 import com.novelnexus.app.AppGraph
 import com.novelnexus.app.core.model.ChapterContent
 import com.novelnexus.app.core.model.ChapterRef
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.withContext
+import kotlin.math.roundToInt
 
-private enum class ReaderPalette(val bg: Color, val fg: Color, val secondary: Color) {
-    NIGHT(Color(0xFF080B10), Color(0xFFECEEF4), Color(0xFFAEB7C7)),
-    SEPIA(Color(0xFFF2E7D3), Color(0xFF322B22), Color(0xFF726453)),
-    LIGHT(Color(0xFFFAFAF8), Color(0xFF1B1A18), Color(0xFF67635C));
+private enum class ReaderPalette(
+    val background: Color,
+    val foreground: Color,
+    val muted: Color
+) {
+    NIGHT(Color(0xFF090A0C), Color(0xFFF0EEE9), Color(0xFFAAA49B)),
+    SEPIA(Color(0xFFF0E4CC), Color(0xFF34291D), Color(0xFF776855)),
+    LIGHT(Color(0xFFFFFCF8), Color(0xFF1D1915), Color(0xFF6F675F));
 
     fun next(): ReaderPalette = entries[(ordinal + 1) % entries.size]
 }
@@ -60,86 +71,227 @@ fun ReaderScreen(
     chapterUrl: String,
     title: String,
     index: Int,
-    onBack: () -> Unit
+    onBack: () -> Unit,
+    onNavigateChapter: (ChapterRef) -> Unit
 ) {
     var content by remember { mutableStateOf<ChapterContent?>(null) }
+    var chapters by remember { mutableStateOf<List<ChapterRef>>(emptyList()) }
     var error by remember { mutableStateOf<String?>(null) }
-    var fontSize by remember { mutableFloatStateOf(18f) }
+    var fontSize by remember { mutableFloatStateOf(19f) }
     var palette by remember { mutableStateOf(ReaderPalette.NIGHT) }
+    var showChrome by remember { mutableStateOf(true) }
     val listState = rememberLazyListState()
+
+    LaunchedEffect(sourceId, novelUrl, chapterUrl) {
+        error = null
+        val current = ChapterRef(sourceId, novelUrl, title, chapterUrl, index)
+
+        runCatching { graph.repository.chapter(current) }
+            .onSuccess { content = it }
+            .onFailure { error = it.message ?: "Could not load chapter." }
+
+        chapters = runCatching { graph.repository.chapters(sourceId, novelUrl) }
+            .getOrDefault(emptyList())
+    }
+
+    val paragraphs = remember(content?.plainText) {
+        content?.plainText
+            ?.split(Regex("\\n\\s*\\n"))
+            ?.map { it.trim() }
+            ?.filter { it.isNotBlank() }
+            .orEmpty()
+    }
+
     val progress by remember {
         derivedStateOf {
             val total = listState.layoutInfo.totalItemsCount
-            if (total <= 1) 0f else (listState.firstVisibleItemIndex.toFloat() / (total - 1).toFloat()).coerceIn(0f, 1f)
+            if (total <= 1) 0f
+            else (listState.firstVisibleItemIndex.toFloat() / (total - 1).toFloat())
+                .coerceIn(0f, 1f)
         }
     }
 
-    LaunchedEffect(sourceId, chapterUrl) {
-        runCatching {
-            graph.repository.chapter(ChapterRef(sourceId, novelUrl, title, chapterUrl, index))
-        }.onSuccess { content = it }.onFailure { error = it.message ?: "Could not load chapter" }
+    LaunchedEffect(content?.chapterUrl, paragraphs.size) {
+        val loaded = content ?: return@LaunchedEffect
+        if (paragraphs.isEmpty()) return@LaunchedEffect
+
+        val saved = withContext(Dispatchers.IO) {
+            graph.repository.db().getReadingProgress(sourceId, novelUrl)
+        }
+
+        if (saved?.chapterUrl == loaded.chapterUrl && saved.progress > 0f) {
+            val target = (saved.progress * (paragraphs.size + 1))
+                .roundToInt()
+                .coerceIn(0, paragraphs.size)
+            listState.scrollToItem(target)
+        }
     }
 
-    LaunchedEffect(chapterUrl) {
-        snapshotFlow { listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset }
-            .collectLatest {
-                delay(600)
-                graph.repository.db().saveProgress(sourceId, novelUrl, chapterUrl, index, progress)
+    LaunchedEffect(content?.chapterUrl) {
+        if (content == null) return@LaunchedEffect
+
+        snapshotFlow {
+            listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset
+        }.collectLatest {
+            delay(500)
+            withContext(Dispatchers.IO) {
+                graph.repository.db().saveProgress(
+                    sourceId,
+                    novelUrl,
+                    chapterUrl,
+                    index,
+                    progress
+                )
             }
+        }
     }
 
-    Column(Modifier.fillMaxSize().background(palette.bg)) {
-        Row(
-            Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 6.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            IconButton(onClick = onBack) { Icon(Icons.Rounded.ArrowBack, "Back", tint = palette.fg) }
-            Text(title, modifier = Modifier.weight(1f), maxLines = 1, fontWeight = FontWeight.SemiBold, color = palette.fg)
-            IconButton(onClick = { palette = palette.next() }) { Icon(Icons.Rounded.Palette, "Reader theme", tint = palette.fg) }
-            IconButton(onClick = { fontSize = (fontSize - 1f).coerceAtLeast(14f) }) { Icon(Icons.Rounded.Remove, "Smaller text", tint = palette.fg) }
-            IconButton(onClick = { fontSize = (fontSize + 1f).coerceAtMost(30f) }) { Icon(Icons.Rounded.Add, "Larger text", tint = palette.fg) }
+    val currentPosition = chapters.indexOfFirst { it.url == chapterUrl }
+        .takeIf { it >= 0 } ?: index
+    val previous = chapters.getOrNull(currentPosition - 1)
+    val next = chapters.getOrNull(currentPosition + 1)
+
+    Column(
+        Modifier
+            .fillMaxSize()
+            .background(palette.background)
+    ) {
+        if (showChrome) {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 4.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                IconButton(onClick = onBack) {
+                    Icon(Icons.Rounded.ArrowBack, "Back", tint = palette.foreground)
+                }
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        title,
+                        color = palette.foreground,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1
+                    )
+                    Text(
+                        "Chapter ${index + 1}",
+                        color = palette.muted,
+                        style = MaterialTheme.typography.labelLarge
+                    )
+                }
+                IconButton(onClick = { palette = palette.next() }) {
+                    Icon(Icons.Rounded.Palette, "Theme", tint = palette.foreground)
+                }
+                IconButton(onClick = {
+                    fontSize = (fontSize - 1f).coerceAtLeast(14f)
+                }) {
+                    Icon(Icons.Rounded.Remove, "Smaller", tint = palette.foreground)
+                }
+                IconButton(onClick = {
+                    fontSize = (fontSize + 1f).coerceAtMost(30f)
+                }) {
+                    Icon(Icons.Rounded.Add, "Larger", tint = palette.foreground)
+                }
+            }
+            LinearProgressIndicator(
+                progress = { progress },
+                modifier = Modifier.fillMaxWidth()
+            )
         }
-        LinearProgressIndicator(progress = { progress }, modifier = Modifier.fillMaxWidth())
+
         when {
-            content == null && error == null -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
-            error != null -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text(error!!, color = MaterialTheme.colorScheme.error) }
+            content == null && error == null -> Box(
+                Modifier.fillMaxSize(),
+                contentAlignment = Alignment.Center
+            ) {
+                CircularProgressIndicator()
+            }
+
+            error != null -> Box(
+                Modifier.fillMaxSize(),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(error.orEmpty(), color = MaterialTheme.colorScheme.error)
+            }
+
             else -> {
-                val chapter = content!!
-                val paragraphs = chapter.plainText
-                    .split(Regex("\\n\\s*\\n"))
-                    .map { it.trim() }
-                    .filter { it.isNotBlank() }
                 LazyColumn(
                     state = listState,
-                    modifier = Modifier.fillMaxSize()
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                        .clickable { showChrome = !showChrome }
                 ) {
                     item {
                         Text(
-                            chapter.title,
-                            modifier = Modifier.padding(start = 22.dp, end = 22.dp, top = 24.dp, bottom = 18.dp),
-                            style = MaterialTheme.typography.headlineSmall,
-                            fontWeight = FontWeight.Bold,
-                            color = palette.fg
-                        )
-                    }
-                    items(paragraphs.size) { position ->
-                        Text(
-                            paragraphs[position],
-                            modifier = Modifier.padding(horizontal = 22.dp, vertical = 9.dp),
+                            content!!.title,
+                            modifier = Modifier.padding(
+                                start = 22.dp,
+                                end = 22.dp,
+                                top = 28.dp,
+                                bottom = 20.dp
+                            ),
                             style = TextStyle(
-                                color = palette.fg,
-                                fontSize = fontSize.sp,
-                                lineHeight = (fontSize * 1.75f).sp,
+                                color = palette.foreground,
+                                fontSize = (fontSize + 5f).sp,
+                                lineHeight = (fontSize + 12f).sp,
+                                fontWeight = FontWeight.Bold,
                                 fontFamily = FontFamily.Serif
                             )
                         )
                     }
+
+                    items(paragraphs) { paragraph ->
+                        Text(
+                            paragraph,
+                            modifier = Modifier.padding(
+                                horizontal = 22.dp,
+                                vertical = 9.dp
+                            ),
+                            style = TextStyle(
+                                color = palette.foreground,
+                                fontSize = fontSize.sp,
+                                lineHeight = (fontSize * 1.72f).sp,
+                                fontFamily = FontFamily.Serif
+                            )
+                        )
+                    }
+
                     item {
                         Text(
                             "End of chapter",
-                            color = palette.secondary,
-                            modifier = Modifier.padding(start = 22.dp, end = 22.dp, top = 28.dp, bottom = 72.dp)
+                            color = palette.muted,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 18.dp, vertical = 34.dp)
                         )
+                    }
+                }
+
+                if (showChrome) {
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .background(palette.background)
+                            .padding(10.dp),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        FilledTonalButton(
+                            onClick = { previous?.let(onNavigateChapter) },
+                            enabled = previous != null,
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Icon(Icons.Rounded.ArrowBack, null)
+                            Text(" Previous")
+                        }
+                        FilledTonalButton(
+                            onClick = { next?.let(onNavigateChapter) },
+                            enabled = next != null,
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text("Next ")
+                            Icon(Icons.Rounded.ArrowForward, null)
+                        }
                     }
                 }
             }

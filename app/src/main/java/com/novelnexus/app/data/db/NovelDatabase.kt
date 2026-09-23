@@ -201,6 +201,34 @@ class NovelDatabase(context: Context) : SQLiteOpenHelper(context, "novel_nexus.d
         }
     }
 
+
+    data class ReadingProgress(
+        val chapterUrl: String,
+        val chapterIndex: Int,
+        val progress: Float
+    )
+
+    fun getReadingProgress(sourceId: String, novelUrl: String): ReadingProgress? {
+        readableDatabase.query(
+            "reading_progress",
+            arrayOf("chapter_url", "chapter_index", "progress"),
+            "source_id=? AND novel_url=?",
+            arrayOf(sourceId, novelUrl),
+            null,
+            null,
+            null,
+            "1"
+        ).use { cursor ->
+            if (!cursor.moveToFirst()) return null
+            return ReadingProgress(
+                chapterUrl = cursor.getString(0),
+                chapterIndex = cursor.getInt(1),
+                progress = cursor.getFloat(2).coerceIn(0f, 1f)
+            )
+        }
+    }
+
+
     fun getProgress(sourceId: String, novelUrl: String): Float {
         readableDatabase.query(
             "reading_progress",
