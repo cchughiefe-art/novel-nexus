@@ -21,8 +21,8 @@ class NovelRepository(
             async {
                 runCatching { source.search(query) }
                     .fold(
-                        onSuccess = { SourceResult(source.id, it, null) },
-                        onFailure = { SourceResult(source.id, null, it.message ?: "Source failed") }
+                        onSuccess = { SourceResult<List<NovelCard>>(source.id, it, null) },
+                        onFailure = { SourceResult<List<NovelCard>>(source.id, null, it.message ?: "Source failed") }
                     )
             }
         }.awaitAll()
@@ -33,8 +33,8 @@ class NovelRepository(
             async {
                 runCatching { source.latest() }
                     .fold(
-                        onSuccess = { SourceResult(source.id, it, null) },
-                        onFailure = { SourceResult(source.id, null, it.message ?: "Source failed") }
+                        onSuccess = { SourceResult<List<NovelCard>>(source.id, it, null) },
+                        onFailure = { SourceResult<List<NovelCard>>(source.id, null, it.message ?: "Source failed") }
                     )
             }
         }.awaitAll()
