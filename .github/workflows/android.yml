@@ -34,26 +34,52 @@ jobs:
         shell: bash
         run: |
           set -e
-          echo "ANDROID_HOME=${ANDROID_HOME:-}"
-          SDKMANAGER="$(command -v sdkmanager || true)"
+          SDK_ROOT="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          echo "SDK root: $SDK_ROOT"
+
+          SDKMANAGER=""
+
+          for candidate in \
+            "$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" \
+            "$SDK_ROOT/cmdline-tools/16.0/bin/sdkmanager" \
+            "$SDK_ROOT/cmdline-tools/12.0/bin/sdkmanager"
+          do
+            if [ -x "$candidate" ]; then
+              SDKMANAGER="$candidate"
+              break
+            fi
+          done
+
+          if [ -z "$SDKMANAGER" ] && [ -d "$SDK_ROOT/cmdline-tools" ]; then
+            SDKMANAGER="$(find "$SDK_ROOT/cmdline-tools" -type f -name sdkmanager -perm -111 2>/dev/null | sort -V | tail -n 1 || true)"
+          fi
+
           if [ -z "$SDKMANAGER" ]; then
-            echo "sdkmanager is not available on this runner"
+            echo "sdkmanager not found under $SDK_ROOT"
+            find "$SDK_ROOT" -maxdepth 4 -type f -name sdkmanager -print || true
             exit 1
           fi
+
+          echo "Using sdkmanager: $SDKMANAGER"
           yes | "$SDKMANAGER" --licenses >/dev/null || true
-          "$SDKMANAGER" "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+          "$SDKMANAGER" \
+            "platform-tools" \
+            "platforms;android-35" \
+            "build-tools;35.0.0"
 
       - name: Verify Novel Nexus branding
         shell: bash
         run: |
-          if grep -RniE 'Novel[A]tlas|novel[a]tlas' \
+          if grep -RniE 'Novel[A]tlas|novel[a]tlas|com\.novel[a]tlas' \
             --exclude-dir=.git \
-            --exclude='*.png' \
-            --exclude='*.jpg' \
-            --exclude='*.jpeg' .; then
-            echo "Old NovelAtlas branding still exists."
+            --exclude-dir=.gradle \
+            --exclude-dir=build .; then
+            echo "Old branding remains."
             exit 1
           fi
+
+      - name: Compile Kotlin
+        run: gradle --no-daemon :app:compileDebugKotlin --stacktrace
 
       - name: Unit tests
         run: gradle --no-daemon :app:testDebugUnitTest --stacktrace

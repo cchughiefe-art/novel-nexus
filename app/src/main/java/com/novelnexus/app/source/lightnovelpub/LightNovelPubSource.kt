@@ -91,7 +91,9 @@ class LightNovelPubSource(private val http: HttpClient) : NovelSource {
             }
             val next = doc.select(".index-container-btn, a[rel=next], .pagination a").firstOrNull {
                 it.text().trim().equals("next", ignoreCase = true)
-            }?.let { it.absUrl("href").ifBlank { absolute(current, it.attr("href")).orEmpty() } }
+            }?.let { link ->
+                link.absUrl("href").ifBlank { absolute(current, link.attr("href")).orEmpty() }
+            }
             if (next.isNullOrBlank()) break
             current = next
             page++

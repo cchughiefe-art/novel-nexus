@@ -46,7 +46,9 @@ class NovelFullSource(
                 sourceId = id,
                 title = title,
                 url = href,
-                coverUrl = row.selectFirst("img")?.let { it.absUrl("data-src").ifBlank { it.absUrl("src") } }.takeUnless { it.isNullOrBlank() },
+                coverUrl = row.selectFirst("img")?.let { img ->
+                    img.absUrl("data-src").ifBlank { img.absUrl("src") }
+                }.takeUnless { it.isNullOrBlank() },
                 author = row.selectFirst(".author")?.text()?.trim(),
                 latestChapter = row.select(".text-info a, .chapter a, .latest-chapter a").lastOrNull()?.text()?.trim()
             )
