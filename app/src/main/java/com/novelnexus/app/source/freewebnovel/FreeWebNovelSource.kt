@@ -12,6 +12,7 @@ import com.novelnexus.app.core.source.cleanChapterText
 import com.novelnexus.app.core.source.firstAttr
 import com.novelnexus.app.core.source.firstText
 import com.novelnexus.app.core.source.parseHtml
+import org.jsoup.nodes.Element
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
 
@@ -22,85 +23,190 @@ class FreeWebNovelSource(private val http: HttpClient) : NovelSource {
 
     override suspend fun search(query: String, page: Int): List<NovelCard> {
         val q = URLEncoder.encode(query, StandardCharsets.UTF_8.toString())
-        val html = http.get("$baseUrl/search?keyword=$q&page=$page")
-        return parseCards(html)
+        val candidates = listOf(
+            "$baseUrl/search?keyword=$q&page=$page",
+            "$baseUrl/search?q=$q&page=$page",
+            "$baseUrl/search/$q"
+        )
+
+        var last: Throwable? = null
+        for (url in candidates) {
+            try {
+                val cards = parseCards(http.get(url, referer = "$baseUrl/home"))
+                if (cards.isNotEmpty()) return cards
+            } catch (t: Throwable) {
+                last = t
+            }
+        }
+        if (last != null) throw last
+        return emptyList()
     }
 
     override suspend fun latest(page: Int): List<NovelCard> {
-        val url = if (page <= 1) "$baseUrl/sort/latest-release" else "$baseUrl/sort/latest-release/$page"
-        return parseCards(http.get(url))
+        val url = if (page <= 1) {
+            "$baseUrl/sort/latest-release"
+        } else {
+            "$baseUrl/sort/latest-release/$page"
+        }
+        return parseCards(http.get(url, referer = "$baseUrl/home"))
+    }
+
+    private fun isNovelUrl(href: String): Boolean {
+        val path = href.substringBefore('?').substringBefore('#')
+        val marker = "/novel/"
+        val i = path.indexOf(marker)
+        if (i < 0) return false
+        val rest = path.substring(i + marker.length).trim('/')
+        return rest.isNotBlank() && !rest.contains('/') &&
+            !rest.startsWith("chapter-", ignoreCase = true)
+    }
+
+    private fun contextFor(link: Element): Element {
+        var node: Element? = link
+        repeat(5) {
+            val current = node
+            if (current != null && current.selectFirst("img") != null) return current
+            node = current?.parent()
+        }
+        return link.parent() ?: link
     }
 
     private fun parseCards(html: String): List<NovelCard> {
         val doc = parseHtml(html, baseUrl)
-        return doc.select(".list-truyen .row, .list-novel .row, .archive .row, .novel-item, .row").mapNotNull { row ->
-            val link = row.selectFirst("h3 a[href], .truyen-title a[href], .novel-title a[href], a[href$=.html]")
-                ?: return@mapNotNull null
-            val href = link.absUrl("href").ifBlank { absolute(baseUrl, link.attr("href")).orEmpty() }
+        val seen = linkedMapOf<String, NovelCard>()
+
+        doc.select("a[href*=/novel/]").forEach { link ->
+            val href = link.absUrl("href")
+                .ifBlank { absolute(baseUrl, link.attr("href")).orEmpty() }
+            if (!isNovelUrl(href)) return@forEach
+
             val title = link.attr("title").ifBlank { link.text() }.trim()
-            if (href.isBlank() || title.isBlank() || href.contains("/chapter", ignoreCase = true)) return@mapNotNull null
-            NovelCard(
-                sourceId = id,
-                title = title,
-                url = href,
-                coverUrl = row.selectFirst("img")?.let { img -> img.absUrl("data-src").ifBlank { img.absUrl("src") } }.takeUnless { it.isNullOrBlank() },
-                author = row.selectFirst(".author, .novel-author")?.text()?.trim(),
-                latestChapter = row.select("a[href*=chapter]").lastOrNull()?.text()?.trim()
+            if (title.length < 2) return@forEach
+
+            val box = contextFor(link)
+            val img = box.selectFirst("img")
+            val cover = img?.absUrl("data-src")
+                ?.ifBlank { img.absUrl("src") }
+                ?.takeIf { it.isNotBlank() }
+
+            val author = box.selectFirst(".author, .novel-author, a[href*=/author/]")
+                ?.text()?.trim()?.takeIf { it.isNotBlank() }
+
+            val latest = box.select(
+                "a[href*=chapter-], .chapter a, .latest-chapter a"
+            ).lastOrNull()?.text()?.trim()?.takeIf { it.isNotBlank() }
+
+            seen.putIfAbsent(
+                href,
+                NovelCard(
+                    sourceId = id,
+                    title = title,
+                    url = href,
+                    coverUrl = cover,
+                    author = author,
+                    latestChapter = latest
+                )
             )
-        }.distinctBy { it.url }
+        }
+
+        return seen.values.toList()
     }
 
     override suspend fun novel(url: String): NovelDetails {
-        val html = http.get(url)
+        val html = http.get(url, referer = "$baseUrl/home")
         val doc = parseHtml(html, url)
-        val title = doc.firstText("h3.title", "h1.title", "h1") ?: "Untitled"
-        val cover = doc.firstAttr("src", ".book img", ".info-holder img", ".m-book1 img")
-            ?: doc.firstAttr("data-src", ".book img", ".info-holder img", ".m-book1 img")
-        val author = doc.selectFirst("a[href*=/author/], a[href*=/authors/], .author a")?.text()?.trim()
-        val genres = doc.select("a[href*=/genre/], a[href*=/genres/]").map { it.text().trim() }.filter { it.isNotBlank() }.distinct()
-        val status = doc.select("li, .item").firstOrNull { it.text().contains("Status", ignoreCase = true) }
-            ?.text()?.substringAfter(":")?.trim()
-        val description = doc.selectFirst(".desc-text, .description, .summary, .m-desc .inner")?.text()?.trim().orEmpty()
-        return NovelDetails(id, title, url, cover, author, description, genres, status, chapters(url))
+
+        val title = doc.firstText("h3.title", "h1.title", "h1", "h3") ?: "Untitled"
+        val cover = doc.firstAttr(
+            "src",
+            ".book img", ".info-holder img", ".m-book1 img", ".cover img"
+        ) ?: doc.firstAttr(
+            "data-src",
+            ".book img", ".info-holder img", ".m-book1 img", ".cover img"
+        )
+
+        val author = doc.selectFirst(
+            "a[href*=/author/], a[href*=/authors/], .author a"
+        )?.text()?.trim()
+
+        val genres = doc.select("a[href*=/genre/], a[href*=/genres/]")
+            .map { it.text().trim() }
+            .filter { it.isNotBlank() }
+            .distinct()
+
+        val status = doc.select("li, .item, .info-meta").firstOrNull {
+            it.text().contains("Status", ignoreCase = true)
+        }?.text()?.substringAfter(":")?.trim()
+
+        val description = doc.selectFirst(
+            ".desc-text, .description, .summary, .m-desc .inner, [class*=summary]"
+        )?.text()?.trim().orEmpty()
+
+        return NovelDetails(
+            id,
+            title,
+            url,
+            cover,
+            author,
+            description,
+            genres,
+            status,
+            chapters(url)
+        )
     }
 
     override suspend fun chapters(url: String): List<ChapterRef> {
-        val html = http.get(url)
+        val html = http.get(url, referer = "$baseUrl/home")
         val doc = parseHtml(html, url)
         val seen = linkedMapOf<String, ChapterRef>()
-        doc.select("#idData a[href], ul.list-chapter a[href], .chapter-list a[href], a[href*=chapter]").forEach { link ->
-            val href = link.absUrl("href").ifBlank { absolute(url, link.attr("href")).orEmpty() }
+
+        doc.select(
+            "a[href*=/novel/][href*=chapter-], " +
+                "#idData a[href*=chapter-], ul.list-chapter a[href*=chapter-], " +
+                ".chapter-list a[href*=chapter-]"
+        ).forEach { link ->
+            val href = link.absUrl("href")
+                .ifBlank { absolute(url, link.attr("href")).orEmpty() }
             val title = link.attr("title").ifBlank { link.text() }.trim()
-            if (href.isNotBlank() && title.isNotBlank() && !seen.containsKey(href)) {
+
+            if (href.isNotBlank() &&
+                "/chapter-" in href &&
+                title.isNotBlank() &&
+                !seen.containsKey(href)
+            ) {
                 seen[href] = ChapterRef(id, url, title, href, seen.size)
             }
         }
-        if (seen.isNotEmpty()) return seen.values.toList()
 
-        // Some FWN layouts expose an id and serve the full TOC from this endpoint.
-        val aid = Regex("(?:data-novel-id|data-articleid)=[\"']([^\"']+)").find(html)?.groupValues?.getOrNull(1)
-            ?: Regex("sourceid=(\\d+)").find(html)?.groupValues?.getOrNull(1)
-        if (!aid.isNullOrBlank()) {
-            val ajax = runCatching { http.get("$baseUrl/api/chapterlist.php?aid=$aid", referer = url) }.getOrNull().orEmpty()
-            val ajaxDoc = parseHtml(ajax, url)
-            ajaxDoc.select("a[href], option[value]").forEach { node ->
-                val raw = node.attr("href").ifBlank { node.attr("value") }
-                val href = absolute(url, raw).orEmpty()
-                val title = node.attr("title").ifBlank { node.text() }.trim()
-                if (href.isNotBlank() && title.isNotBlank() && !seen.containsKey(href)) {
-                    seen[href] = ChapterRef(id, url, title, href, seen.size)
-                }
-            }
+        return seen.values.toList().mapIndexed { index, ref ->
+            ref.copy(index = index)
         }
-        return seen.values.toList()
     }
 
     override suspend fun chapter(ref: ChapterRef): ChapterContent {
         val html = http.get(ref.url, referer = ref.novelUrl)
         val doc = parseHtml(html, ref.url)
-        val container = doc.selectFirst(".txt, #chr-content, #chapter-content, .chapter-content, article")
-            ?: error("Chapter content not found")
-        val title = doc.firstText("h2", ".chapter-title", "h1") ?: ref.title
-        return ChapterContent(id, ref.novelUrl, ref.url, title, ref.index, cleanChapterHtml(container), cleanChapterText(container))
+
+        val container = doc.selectFirst(
+            "#chapter-content, .chapter-content, .chapter-body, .reading-content, " +
+                ".read-content, .txt, #chr-content, article, main"
+        ) ?: error("Chapter content not found")
+
+        val title = doc.firstText(
+            "h4", "h1", "h2", ".chapter-title"
+        ) ?: ref.title
+
+        val text = cleanChapterText(container)
+        if (text.length < 40) error("Chapter content was empty")
+
+        return ChapterContent(
+            id,
+            ref.novelUrl,
+            ref.url,
+            title,
+            ref.index,
+            cleanChapterHtml(container),
+            text
+        )
     }
 }
