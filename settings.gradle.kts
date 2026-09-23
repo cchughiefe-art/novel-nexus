@@ -14,5 +14,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "NovelAtlas"
+rootProject.name = "NovelNexus"
 include(":app")
