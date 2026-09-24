@@ -8,9 +8,6 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.animateScrollBy
-import androidx.compose.foundation.gestures.detectHorizontalDragGestures
-import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -72,7 +69,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
@@ -102,7 +98,6 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import kotlin.math.abs
 import kotlin.math.roundToInt
 
 private fun Context.activity(): Activity? {
@@ -156,7 +151,7 @@ fun ReaderScreen(
     val view = LocalView.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val scope = rememberCoroutineScope()
-    val prefs by graph.readerPreferences.effectiveFlow(novelUrl).collectAsState(initial = ReaderPrefs())
+    val prefs by graph.readerPreferences.flow.collectAsState(initial = ReaderPrefs())
     val colors = palette(prefs.theme)
 
     var content by remember(chapterUrl) { mutableStateOf<ChapterContent?>(null) }
@@ -174,11 +169,6 @@ fun ReaderScreen(
     var drawerQuery by remember { mutableStateOf("") }
     val listState = rememberLazyListState()
     val sessionStarted = remember(chapterUrl) { System.currentTimeMillis() }
-    var autoScrollPaused by remember(chapterUrl) { mutableStateOf(false) }
-    var autoNextCountdown by remember(chapterUrl) { mutableStateOf<Int?>(null) }
-    var userMoved by remember(chapterUrl) { mutableStateOf(false) }
-    var showReport by remember { mutableStateOf(false) }
-    var reportNote by remember { mutableStateOf("") }
 
     LaunchedEffect(sourceId, novelUrl, chapterUrl) {
         error = null
@@ -307,7 +297,7 @@ fun ReaderScreen(
         scope.launch { saveProgressNow(); onNavigateChapter(ref) }
     }
 
-    val atEnd by remember { derivedStateOf { if (prefs.mode=="PAGED") pagerState.currentPage==pages.lastIndex else listState.layoutInfo.totalItemsCount>0 && !listState.canScrollForward } }\n\n    LaunchedEffect(chapterUrl,prefs.mode) {\n        if(prefs.mode=="PAGED") snapshotFlow{pagerState.currentPage}.collect{if(it>0)userMoved=true}\n        else snapshotFlow{listState.firstVisibleItemIndex}.collect{if(it>0)userMoved=true}\n    }\n\n    LaunchedEffect(prefs.autoScroll,prefs.autoScrollSpeed,prefs.mode,autoScrollPaused,chapterUrl) {\n        if(!prefs.autoScroll || prefs.mode!="SCROLL" || autoScrollPaused) return@LaunchedEffect\n        while(kotlinx.coroutines.currentCoroutineContext().isActive && listState.canScrollForward){\n            listState.scrollBy(prefs.autoScrollSpeed.coerceIn(10f,180f)/10f); delay(100)\n        }\n    }\n\n    LaunchedEffect(atEnd,userMoved,prefs.autoNext,prefs.autoNextSeconds,prefs.continuousMode,next?.url,chapterUrl) {\n        autoNextCountdown=null\n        val target=next ?: return@LaunchedEffect\n        if(!atEnd || !userMoved) return@LaunchedEffect\n        if(prefs.continuousMode){ delay(if(prefs.reducedMotion)50 else 250); navigate(target); return@LaunchedEffect }\n        if(!prefs.autoNext) return@LaunchedEffect\n        for(left in prefs.autoNextSeconds.coerceIn(2,15) downTo 1){ autoNextCountdown=left; delay(1000); if(!atEnd) return@LaunchedEffect }\n        autoNextCountdown=null; navigate(target)\n    }\n\n    var swipeDistance=0f\n    val readerGestureModifier=Modifier\n        .pointerInput(prefs.tapLeftAction,prefs.tapRightAction){\n            detectTapGestures{point->\n                val third=size.width/3f\n                when{\n                    point.x<third && prefs.tapLeftAction=="CHAPTER" -> previous?.let(::navigate)\n                    point.x>third*2f && prefs.tapRightAction=="CHAPTER" -> next?.let(::navigate)\n                    point.x<third && prefs.tapLeftAction=="PAGE" -> scope.launch{ if(prefs.mode=="PAGED") pagerState.animateScrollToPage((pagerState.currentPage-1).coerceAtLeast(0)) else listState.animateScrollBy(-700f) }\n                    point.x>third*2f && prefs.tapRightAction=="PAGE" -> scope.launch{ if(prefs.mode=="PAGED") pagerState.animateScrollToPage((pagerState.currentPage+1).coerceAtMost(pages.lastIndex)) else listState.animateScrollBy(700f) }\n                    else -> showChrome=!showChrome\n                }\n            }\n        }\n        .pointerInput(prefs.swipeChapter){\n            if(prefs.swipeChapter) detectHorizontalDragGestures(onDragStart={swipeDistance=0f},onHorizontalDrag={_,a->swipeDistance+=a},onDragEnd={ if(abs(swipeDistance)>140f){ if(swipeDistance>0) previous?.let(::navigate) else next?.let(::navigate)} })\n        }\n\n    ModalNavigationDrawer(
+    ModalNavigationDrawer(
         drawerState=drawerState,
         gesturesEnabled=true,
         drawerContent={
@@ -366,13 +356,6 @@ fun ReaderScreen(
                 if(newChapterCount>0) Text("+$newChapterCount new chapter${if(newChapterCount==1) "" else "s"} available",color=MaterialTheme.colorScheme.primary,modifier=Modifier.padding(horizontal=12.dp,vertical=4.dp))
             }
 
-            autoNextCountdown?.let { left ->
-                Row(Modifier.fillMaxWidth().padding(10.dp),verticalAlignment=Alignment.CenterVertically){
-                    Text("Next chapter in $left…",modifier=Modifier.weight(1f),color=colors.fg)
-                    TextButton(onClick={autoNextCountdown=null}){Text("Cancel")}
-                }
-            }
-
             when {
                 content==null && error==null -> Box(Modifier.fillMaxSize(),contentAlignment=Alignment.Center) { CircularProgressIndicator() }
                 error!=null -> Box(Modifier.fillMaxSize(),contentAlignment=Alignment.Center) {
@@ -388,7 +371,7 @@ fun ReaderScreen(
                 }
                 prefs.mode=="PAGED" -> HorizontalPager(
                     state=pagerState,
-                    modifier=Modifier.weight(1f).fillMaxWidth().then(readerGestureModifier)
+                    modifier=Modifier.weight(1f).fillMaxWidth().combinedClickable(onClick={showChrome=!showChrome})
                 ) { page ->
                     LazyColumn(Modifier.fillMaxSize().padding(horizontal=prefs.margin.dp)) {
                         if(page==0) item { Text(content!!.title,color=colors.fg,fontFamily=FontFamily.Serif,fontWeight=FontWeight.Bold,fontSize=(prefs.fontSize+5).sp,modifier=Modifier.padding(vertical=24.dp)) }
@@ -399,7 +382,7 @@ fun ReaderScreen(
                 }
                 else -> LazyColumn(
                     state=listState,
-                    modifier=Modifier.weight(1f).fillMaxWidth().then(readerGestureModifier)
+                    modifier=Modifier.weight(1f).fillMaxWidth().combinedClickable(onClick={showChrome=!showChrome})
                 ) {
                     item {
                         Text(content!!.title,color=colors.fg,fontFamily=FontFamily.Serif,fontWeight=FontWeight.Bold,fontSize=(prefs.fontSize+5).sp,lineHeight=(prefs.fontSize+12).sp,modifier=Modifier.padding(horizontal=prefs.margin.dp,vertical=24.dp))
@@ -443,36 +426,27 @@ fun ReaderScreen(
                 Text("Theme",style=MaterialTheme.typography.titleMedium,modifier=Modifier.padding(top=14.dp))
                 Row(horizontalArrangement=Arrangement.spacedBy(6.dp)) {
                     listOf("AMOLED","DARK","SEPIA","PAPER","WHITE").forEach { name ->
-                        TextButton(onClick={scope.launch { graph.readerPreferences.updateForBook(novelUrl) { it.copy(theme=name) } }}) { Text(name) }
+                        TextButton(onClick={scope.launch { graph.readerPreferences.update { it.copy(theme=name) } }}) { Text(name) }
                     }
                 }
                 Text("Reading mode",style=MaterialTheme.typography.titleMedium)
-                Row { listOf("SCROLL","PAGED").forEach { m -> TextButton(onClick={scope.launch { graph.readerPreferences.updateForBook(novelUrl) { it.copy(mode=m) } }}) { Text(m) } } }
+                Row { listOf("SCROLL","PAGED").forEach { m -> TextButton(onClick={scope.launch { graph.readerPreferences.update { it.copy(mode=m) } }}) { Text(m) } } }
                 Text("Font size ${prefs.fontSize.roundToInt()}")
-                Slider(value=prefs.fontSize,onValueChange={v->scope.launch { graph.readerPreferences.updateForBook(novelUrl) { it.copy(fontSize=v) } }},valueRange=14f..30f)
+                Slider(value=prefs.fontSize,onValueChange={v->scope.launch { graph.readerPreferences.update { it.copy(fontSize=v) } }},valueRange=14f..30f)
                 Text("Line height ${"%.2f".format(prefs.lineHeight)}")
-                Slider(value=prefs.lineHeight,onValueChange={v->scope.launch { graph.readerPreferences.updateForBook(novelUrl) { it.copy(lineHeight=v) } }},valueRange=1.2f..2.2f)
+                Slider(value=prefs.lineHeight,onValueChange={v->scope.launch { graph.readerPreferences.update { it.copy(lineHeight=v) } }},valueRange=1.2f..2.2f)
                 Text("Paragraph spacing ${prefs.paragraphSpacing.roundToInt()}dp")
-                Slider(value=prefs.paragraphSpacing,onValueChange={v->scope.launch { graph.readerPreferences.updateForBook(novelUrl) { it.copy(paragraphSpacing=v) } }},valueRange=2f..20f)
+                Slider(value=prefs.paragraphSpacing,onValueChange={v->scope.launch { graph.readerPreferences.update { it.copy(paragraphSpacing=v) } }},valueRange=2f..20f)
                 Text("Side margins ${prefs.margin.roundToInt()}dp")
-                Slider(value=prefs.margin,onValueChange={v->scope.launch { graph.readerPreferences.updateForBook(novelUrl) { it.copy(margin=v) } }},valueRange=10f..42f)
+                Slider(value=prefs.margin,onValueChange={v->scope.launch { graph.readerPreferences.update { it.copy(margin=v) } }},valueRange=10f..42f)
                 Text("Brightness ${if(prefs.brightness<0f) "System" else "${(prefs.brightness*100).roundToInt()}%"}")
-                Slider(value=if(prefs.brightness<0f) 0.5f else prefs.brightness,onValueChange={v->scope.launch { graph.readerPreferences.updateForBook(novelUrl) { it.copy(brightness=v) } }},valueRange=0.05f..1f)
-                TextButton(onClick={scope.launch { graph.readerPreferences.updateForBook(novelUrl) { it.copy(brightness=-1f) } }}) { Text("Use system brightness") }
-                SettingSwitch("Immersive fullscreen",prefs.immersive) { scope.launch { graph.readerPreferences.updateForBook(novelUrl) { p->p.copy(immersive=it) } } }
-                SettingSwitch("Keep screen awake",prefs.keepAwake) { scope.launch { graph.readerPreferences.updateForBook(novelUrl) { p->p.copy(keepAwake=it) } } }
-                SettingSwitch("Volume buttons scroll/page",prefs.volumeNavigation) { scope.launch { graph.readerPreferences.updateForBook(novelUrl) { p->p.copy(volumeNavigation=it) } } }
-                SettingSwitch("Auto-scroll",prefs.autoScroll) { scope.launch { graph.readerPreferences.updateForBook(novelUrl) { p->p.copy(autoScroll=it) } } }
-                if(prefs.autoScroll){ Text("Auto-scroll speed ${prefs.autoScrollSpeed.roundToInt()}"); Slider(value=prefs.autoScrollSpeed,onValueChange={v->scope.launch{graph.readerPreferences.updateForBook(novelUrl){it.copy(autoScrollSpeed=v)}}},valueRange=10f..180f) }
-                SettingSwitch("Automatic next chapter",prefs.autoNext) { scope.launch { graph.readerPreferences.updateForBook(novelUrl) { p->p.copy(autoNext=it) } } }
-                if(prefs.autoNext){ Text("Countdown ${prefs.autoNextSeconds}s"); Slider(value=prefs.autoNextSeconds.toFloat(),onValueChange={v->scope.launch{graph.readerPreferences.updateForBook(novelUrl){it.copy(autoNextSeconds=v.roundToInt().coerceIn(2,15))}}},valueRange=2f..15f,steps=12) }
-                SettingSwitch("Continuous chapter mode",prefs.continuousMode) { scope.launch { graph.readerPreferences.updateForBook(novelUrl) { p->p.copy(continuousMode=it) } } }
-                SettingSwitch("Reduced motion",prefs.reducedMotion) { scope.launch { graph.readerPreferences.updateForBook(novelUrl) { p->p.copy(reducedMotion=it) } } }
-                SettingSwitch("High contrast",prefs.highContrast) { scope.launch { graph.readerPreferences.updateForBook(novelUrl) { p->p.copy(highContrast=it) } } }
-                SettingSwitch("Large reader controls",prefs.largeControls) { scope.launch { graph.readerPreferences.updateForBook(novelUrl) { p->p.copy(largeControls=it) } } }
-                SettingSwitch("Swipe left/right changes chapter",prefs.swipeChapter) { scope.launch { graph.readerPreferences.updateForBook(novelUrl) { p->p.copy(swipeChapter=it) } } }
+                Slider(value=if(prefs.brightness<0f) 0.5f else prefs.brightness,onValueChange={v->scope.launch { graph.readerPreferences.update { it.copy(brightness=v) } }},valueRange=0.05f..1f)
+                TextButton(onClick={scope.launch { graph.readerPreferences.update { it.copy(brightness=-1f) } }}) { Text("Use system brightness") }
+                SettingSwitch("Immersive fullscreen",prefs.immersive) { scope.launch { graph.readerPreferences.update { p->p.copy(immersive=it) } } }
+                SettingSwitch("Keep screen awake",prefs.keepAwake) { scope.launch { graph.readerPreferences.update { p->p.copy(keepAwake=it) } } }
+                SettingSwitch("Volume buttons scroll/page",prefs.volumeNavigation) { scope.launch { graph.readerPreferences.update { p->p.copy(volumeNavigation=it) } } }
                 Text("Orientation",style=MaterialTheme.typography.titleMedium,modifier=Modifier.padding(top=8.dp))
-                Row { listOf("AUTO","PORTRAIT","LANDSCAPE").forEach { o -> TextButton(onClick={scope.launch { graph.readerPreferences.updateForBook(novelUrl) { it.copy(orientation=o) } }}) { Text(o) } } }
+                Row { listOf("AUTO","PORTRAIT","LANDSCAPE").forEach { o -> TextButton(onClick={scope.launch { graph.readerPreferences.update { it.copy(orientation=o) } }}) { Text(o) } } }
                 Spacer(Modifier.height(24.dp))
             }
         }
@@ -493,15 +467,6 @@ fun ReaderScreen(
                 }
             },
             confirmButton={TextButton(onClick={showFind=false}) { Text("Close") }}
-        )
-    }
-    if(showReport){
-        AlertDialog(
-            onDismissRequest={showReport=false},
-            title={Text("Report chapter problem")},
-            text={OutlinedTextField(value=reportNote,onValueChange={reportNote=it},label={Text("Describe the problem")})},
-            confirmButton={TextButton(onClick={graph.repository.db().recordProblemReport(sourceId,novelUrl,chapterUrl,index,"Reader report",reportNote);reportNote="";showReport=false}){Text("Save")}},
-            dismissButton={TextButton(onClick={showReport=false}){Text("Cancel")}}
         )
     }
 }

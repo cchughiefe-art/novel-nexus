@@ -8,7 +8,7 @@ import com.novelnexus.app.core.model.ChapterContent
 import com.novelnexus.app.core.model.ChapterRef
 import com.novelnexus.app.core.model.NovelDetails
 
-class NovelDatabase(context: Context) : SQLiteOpenHelper(context, "novel_nexus.db", null, 4) {
+class NovelDatabase(context: Context) : SQLiteOpenHelper(context, "novel_nexus.db", null, 3) {
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL("""
             CREATE TABLE offline_novels(
@@ -32,8 +32,6 @@ class NovelDatabase(context: Context) : SQLiteOpenHelper(context, "novel_nexus.d
               html TEXT NOT NULL,
               plain_text TEXT NOT NULL,
               downloaded_at INTEGER NOT NULL,
-              checksum TEXT,
-              checked_at INTEGER NOT NULL DEFAULT 0,
               PRIMARY KEY(source_id, chapter_url)
             )
         """.trimIndent())
@@ -98,9 +96,7 @@ class NovelDatabase(context: Context) : SQLiteOpenHelper(context, "novel_nexus.d
             CREATE TABLE IF NOT EXISTS reading_stats(
               day TEXT PRIMARY KEY,
               seconds_read INTEGER NOT NULL DEFAULT 0,
-              chapters_opened INTEGER NOT NULL DEFAULT 0,
-              words_read INTEGER NOT NULL DEFAULT 0,
-              chapters_completed INTEGER NOT NULL DEFAULT 0
+              chapters_opened INTEGER NOT NULL DEFAULT 0
             )
         """.trimIndent())
     }
@@ -114,24 +110,6 @@ class NovelDatabase(context: Context) : SQLiteOpenHelper(context, "novel_nexus.d
             createV2Tables(db)
         }
         if (oldVersion < 3) createV2Tables(db)
-        if (oldVersion < 4) {
-            runCatching { db.execSQL("ALTER TABLE offline_chapters ADD COLUMN checksum TEXT") }
-            runCatching { db.execSQL("ALTER TABLE offline_chapters ADD COLUMN checked_at INTEGER NOT NULL DEFAULT 0") }
-            runCatching { db.execSQL("ALTER TABLE reading_stats ADD COLUMN words_read INTEGER NOT NULL DEFAULT 0") }
-            runCatching { db.execSQL("ALTER TABLE reading_stats ADD COLUMN chapters_completed INTEGER NOT NULL DEFAULT 0") }
-            db.execSQL("""
-                CREATE TABLE IF NOT EXISTS problem_reports(
-                  id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  source_id TEXT NOT NULL,
-                  novel_url TEXT NOT NULL,
-                  chapter_url TEXT NOT NULL,
-                  chapter_index INTEGER NOT NULL,
-                  problem_type TEXT NOT NULL,
-                  note TEXT,
-                  created_at INTEGER NOT NULL
-                )
-            """.trimIndent())
-        }
     }
 
     fun upsertNovel(sourceId: String, novelUrl: String, title: String, coverUrl: String?, author: String?) {
@@ -155,8 +133,6 @@ class NovelDatabase(context: Context) : SQLiteOpenHelper(context, "novel_nexus.d
             put("html", chapter.html)
             put("plain_text", chapter.plainText)
             put("downloaded_at", System.currentTimeMillis())
-            put("checksum", checksum(chapter.plainText))
-            put("checked_at", System.currentTimeMillis())
         }, SQLiteDatabase.CONFLICT_REPLACE)
     }
 
@@ -409,5 +385,5 @@ class NovelDatabase(context: Context) : SQLiteOpenHelper(context, "novel_nexus.d
             "UPDATE reading_stats SET seconds_read=seconds_read+?, chapters_opened=chapters_opened+1 WHERE day=?",
             arrayOf(seconds, day)
         )
-    }\n\n    private fun checksum(text: String): String =\n        java.security.MessageDigest.getInstance("SHA-256")\n            .digest(text.toByteArray())\n            .joinToString("") { "%02x".format(it) }\n\n    fun contentChecksum(text: String): String = checksum(text)\n\n    fun verifyDownloadedChapter(sourceId: String, chapterUrl: String): Boolean {\n        readableDatabase.query(\n            "offline_chapters", arrayOf("plain_text", "checksum"),\n            "source_id=? AND chapter_url=?", arrayOf(sourceId, chapterUrl),\n            null, null, null, "1"\n        ).use { c ->\n            if (!c.moveToFirst()) return false\n            val text=c.getString(0)\n            if (text.length < 40) return false\n            val now=checksum(text)\n            val stored=if(c.isNull(1)) null else c.getString(1)\n            if (stored.isNullOrBlank()) {\n                writableDatabase.update(\n                    "offline_chapters",\n                    ContentValues().apply { put("checksum", now); put("checked_at", System.currentTimeMillis()) },\n                    "source_id=? AND chapter_url=?", arrayOf(sourceId, chapterUrl)\n                )\n                return true\n            }\n            return stored==now\n        }\n    }\n\n    fun chapterChecksum(sourceId: String, chapterUrl: String): String? {\n        readableDatabase.query(\n            "offline_chapters", arrayOf("checksum", "plain_text"),\n            "source_id=? AND chapter_url=?", arrayOf(sourceId, chapterUrl),\n            null, null, null, "1"\n        ).use { c ->\n            if(!c.moveToFirst()) return null\n            val stored=if(c.isNull(0)) null else c.getString(0)\n            if(!stored.isNullOrBlank()) return stored\n            return checksum(c.getString(1))\n        }\n    }\n\n    fun shouldCheckForEdit(sourceId: String, chapterUrl: String): Boolean {\n        readableDatabase.query(\n            "offline_chapters", arrayOf("checked_at"),\n            "source_id=? AND chapter_url=?", arrayOf(sourceId, chapterUrl),\n            null, null, null, "1"\n        ).use { c ->\n            if(!c.moveToFirst()) return false\n            return System.currentTimeMillis()-c.getLong(0) >= 12L*60L*60L*1000L\n        }\n    }\n\n    fun markChapterChecked(sourceId: String, chapterUrl: String) {\n        writableDatabase.update(\n            "offline_chapters", ContentValues().apply { put("checked_at", System.currentTimeMillis()) },\n            "source_id=? AND chapter_url=?", arrayOf(sourceId, chapterUrl)\n        )\n    }\n\n    fun recordProblemReport(sourceId:String, novelUrl:String, chapterUrl:String, chapterIndex:Int, type:String, note:String) {\n        writableDatabase.insert("problem_reports", null, ContentValues().apply {\n            put("source_id",sourceId); put("novel_url",novelUrl); put("chapter_url",chapterUrl)\n            put("chapter_index",chapterIndex); put("problem_type",type); put("note",note); put("created_at",System.currentTimeMillis())\n        })\n    }\n\n    data class ReadingStats(val todaySeconds:Long,val weekSeconds:Long,val totalSeconds:Long,val streakDays:Int,val wordsRead:Long,val chaptersCompleted:Int)\n\n    fun addReadingSession(seconds:Long, words:Int, completed:Boolean) {\n        if(seconds<=0) return\n        val day=java.text.SimpleDateFormat("yyyy-MM-dd",java.util.Locale.US).format(java.util.Date())\n        writableDatabase.insertWithOnConflict("reading_stats",null,ContentValues().apply {\n            put("day",day); put("seconds_read",0); put("chapters_opened",0); put("words_read",0); put("chapters_completed",0)\n        },SQLiteDatabase.CONFLICT_IGNORE)\n        writableDatabase.execSQL(\n            "UPDATE reading_stats SET seconds_read=seconds_read+?, chapters_opened=chapters_opened+1, words_read=words_read+?, chapters_completed=chapters_completed+? WHERE day=?",\n            arrayOf(seconds,words,if(completed)1 else 0,day)\n        )\n    }\n\n    fun readingStats(): ReadingStats {\n        val rows=mutableMapOf<String,LongArray>()\n        readableDatabase.rawQuery("SELECT day,seconds_read,words_read,chapters_completed FROM reading_stats ORDER BY day DESC",null).use { c ->\n            while(c.moveToNext()) rows[c.getString(0)] = longArrayOf(c.getLong(1),c.getLong(2),c.getLong(3))\n        }\n        val fmt=java.text.SimpleDateFormat("yyyy-MM-dd",java.util.Locale.US)\n        val today=fmt.format(java.util.Date())\n        var week=0L; var streak=0\n        repeat(7){ off -> val cal=java.util.Calendar.getInstance().apply { add(java.util.Calendar.DAY_OF_YEAR,-off) }; week += rows[fmt.format(cal.time)]?.get(0)?:0L }\n        var cal=java.util.Calendar.getInstance()\n        while((rows[fmt.format(cal.time)]?.get(0)?:0L)>0L){ streak++; cal.add(java.util.Calendar.DAY_OF_YEAR,-1) }\n        return ReadingStats(rows[today]?.get(0)?:0L,week,rows.values.sumOf{it[0]},streak,rows.values.sumOf{it[1]},rows.values.sumOf{it[2]}.toInt())\n    }\n
+    }
 }

@@ -18,7 +18,6 @@ class NovelRepository(
     data class SourceResult<T>(val sourceId: String, val data: T?, val error: String?)
     data class NovelRefresh(val details: NovelDetails, val newChapterCount: Int)
     data class ChapterLoad(val content: ChapterContent, val origin: String)
-    data class ChapterEditCheck(val changed: Boolean, val fresh: ChapterContent?)
 
     private data class Timed<T>(val value: T, val at: Long = System.currentTimeMillis())
     private val detailsCache = ConcurrentHashMap<String, Timed<NovelDetails>>()
@@ -119,22 +118,9 @@ class NovelRepository(
     }
 
     suspend fun chapterLoad(ref: ChapterRef): ChapterLoad {
-        db.getChapter(ref.sourceId,ref.url)?.let { local ->
-            if (db.verifyDownloadedChapter(ref.sourceId,ref.url)) return ChapterLoad(local,"Downloaded")
-        }
+        db.getChapter(ref.sourceId,ref.url)?.let { return ChapterLoad(it,"Downloaded") }
         return ChapterLoad(sources.require(ref.sourceId).chapter(ref),"Network / cache")
     }
-
-    suspend fun checkDownloadedChapterEdit(ref: ChapterRef): ChapterEditCheck {
-        if (!db.shouldCheckForEdit(ref.sourceId, ref.url)) return ChapterEditCheck(false,null)
-        val remote=runCatching { sources.require(ref.sourceId).chapter(ref) }.getOrNull() ?: return ChapterEditCheck(false,null)
-        db.markChapterChecked(ref.sourceId,ref.url)
-        val local=db.chapterChecksum(ref.sourceId,ref.url)
-        val remoteHash=db.contentChecksum(remote.plainText)
-        return ChapterEditCheck(local!=null && local!=remoteHash, if(local!=remoteHash) remote else null)
-    }
-
-    fun acceptEditedChapter(content: ChapterContent) { db.saveChapter(content) }
 
     suspend fun chapter(ref: ChapterRef): ChapterContent = chapterLoad(ref).content
 

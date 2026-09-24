@@ -3,7 +3,6 @@ package com.novelnexus.app
 import android.app.Application
 import com.novelnexus.app.core.network.HttpClient
 import com.novelnexus.app.core.source.SourceRegistry
-import com.novelnexus.app.data.cache.CacheSettings
 import com.novelnexus.app.data.db.NovelDatabase
 import com.novelnexus.app.data.reader.ReaderPreferences
 import com.novelnexus.app.data.repo.NovelRepository
@@ -17,8 +16,7 @@ class NovelNexusApp : Application() {
 
     override fun onCreate() {
         super.onCreate()
-        val cacheSettings = CacheSettings(this)
-        val http = HttpClient(this, cacheSettings.limitMb())
+        val http = HttpClient(this)
         val db = NovelDatabase(this)
         val registry = SourceRegistry(
             listOf(
@@ -31,9 +29,7 @@ class NovelNexusApp : Application() {
         graph = AppGraph(
             sources = registry,
             repository = NovelRepository(registry, db),
-            readerPreferences = ReaderPreferences(this),
-            http = http,
-            cacheSettings = cacheSettings
+            readerPreferences = ReaderPreferences(this)
         )
     }
 }
@@ -41,7 +37,5 @@ class NovelNexusApp : Application() {
 data class AppGraph(
     val sources: SourceRegistry,
     val repository: NovelRepository,
-    val readerPreferences: ReaderPreferences,
-    val http: HttpClient,
-    val cacheSettings: CacheSettings
+    val readerPreferences: ReaderPreferences
 )

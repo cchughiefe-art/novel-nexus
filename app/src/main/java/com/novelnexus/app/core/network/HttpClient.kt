@@ -13,9 +13,9 @@ import java.io.File
 import java.io.IOException
 import java.util.concurrent.TimeUnit
 
-class HttpClient(context: Context) {
+class HttpClient(context: Context, initialCacheMb: Int = 100) {
     private val client = OkHttpClient.Builder()
-        .cache(Cache(File(context.cacheDir, "novel_nexus_http"), 40L * 1024L * 1024L))
+        .cache(Cache(File(context.cacheDir, "novel_nexus_http"), initialCacheMb.coerceIn(25,250).toLong() * 1024L * 1024L))
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(25, TimeUnit.SECONDS)
         .callTimeout(35, TimeUnit.SECONDS)
@@ -40,6 +40,10 @@ class HttpClient(context: Context) {
             }
         }
         .build()
+
+    fun cacheSizeBytes(): Long = runCatching { client.cache?.size() ?: 0L }.getOrDefault(0L)
+
+    fun clearCache() { runCatching { client.cache?.evictAll() } }
 
     suspend fun get(
         url: String,
@@ -103,6 +107,6 @@ class HttpClient(context: Context) {
     companion object {
         const val USER_AGENT =
             "Mozilla/5.0 (Linux; Android 15) AppleWebKit/537.36 " +
-                "(KHTML, like Gecko) Chrome/126 Mobile Safari/537.36 NovelNexus/0.3.0"
+                "(KHTML, like Gecko) Chrome/126 Mobile Safari/537.36 NovelNexus/0.4.0"
     }
 }
