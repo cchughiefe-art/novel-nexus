@@ -4,6 +4,7 @@ import android.app.Application
 import com.novelnexus.app.core.network.HttpClient
 import com.novelnexus.app.core.source.SourceRegistry
 import com.novelnexus.app.data.db.NovelDatabase
+import com.novelnexus.app.data.reader.ReaderPreferences
 import com.novelnexus.app.data.repo.NovelRepository
 import com.novelnexus.app.source.freewebnovel.FreeWebNovelSource
 import com.novelnexus.app.source.lightnovelpub.LightNovelPubSource
@@ -25,11 +26,16 @@ class NovelNexusApp : Application() {
                 LightNovelPubSource(http)
             )
         )
-        graph = AppGraph(registry, NovelRepository(registry, db))
+        graph = AppGraph(
+            sources = registry,
+            repository = NovelRepository(registry, db),
+            readerPreferences = ReaderPreferences(this)
+        )
     }
 }
 
 data class AppGraph(
     val sources: SourceRegistry,
-    val repository: NovelRepository
+    val repository: NovelRepository,
+    val readerPreferences: ReaderPreferences
 )

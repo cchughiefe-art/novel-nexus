@@ -15,184 +15,123 @@ class NovelRepository(
     val sources: SourceRegistry,
     private val db: NovelDatabase
 ) {
-    data class SourceResult<T>(
-        val sourceId: String,
-        val data: T?,
-        val error: String?
-    )
+    data class SourceResult<T>(val sourceId: String, val data: T?, val error: String?)
+    data class NovelRefresh(val details: NovelDetails, val newChapterCount: Int)
+    data class ChapterLoad(val content: ChapterContent, val origin: String)
 
-    data class NovelRefresh(
-        val details: NovelDetails,
-        val newChapterCount: Int
-    )
-
-    private data class Timed<T>(
-        val value: T,
-        val at: Long = System.currentTimeMillis()
-    )
-
+    private data class Timed<T>(val value: T, val at: Long = System.currentTimeMillis())
     private val detailsCache = ConcurrentHashMap<String, Timed<NovelDetails>>()
     private val chaptersCache = ConcurrentHashMap<String, Timed<List<ChapterRef>>>()
-    private val searchCache =
-        ConcurrentHashMap<String, Timed<List<SourceResult<List<NovelCard>>>>>()
+    private val searchCache = ConcurrentHashMap<String, Timed<List<SourceResult<List<NovelCard>>>>>()
     private var latestCache: Timed<List<SourceResult<List<NovelCard>>>>? = null
 
     private fun cacheKey(sourceId: String, url: String) = "$sourceId::$url"
-
-    private fun <T> Timed<T>?.fresh(ttl: Long): T? {
-        if (this == null) return null
-        return if (System.currentTimeMillis() - at <= ttl) value else null
-    }
-
+    private fun <T> Timed<T>?.fresh(ttl: Long): T? = if (this != null && System.currentTimeMillis()-at <= ttl) value else null
     private fun trim() {
         if (detailsCache.size > 80) detailsCache.clear()
         if (chaptersCache.size > 80) chaptersCache.clear()
         if (searchCache.size > 30) searchCache.clear()
     }
 
-    suspend fun searchAll(
-        query: String
-    ): List<SourceResult<List<NovelCard>>> = coroutineScope {
+    suspend fun searchAll(query: String): List<SourceResult<List<NovelCard>>> = coroutineScope {
         val enabled = sources.enabled()
         val key = enabled.joinToString(",") { it.id } + "::" + query.trim().lowercase()
-
-        searchCache[key].fresh(120_000L)?.let {
-            return@coroutineScope it
-        }
-
-        val result = enabled.map { source ->
-            async {
-                runCatching { source.search(query) }
-                    .fold(
-                        onSuccess = {
-                            SourceResult<List<NovelCard>>(source.id, it, null)
-                        },
-                        onFailure = {
-                            SourceResult<List<NovelCard>>(
-                                source.id,
-                                null,
-                                it.message ?: "Source failed"
-                            )
-                        }
-                    )
-            }
-        }.awaitAll()
-
-        if (result.any { !it.data.isNullOrEmpty() }) {
-            searchCache[key] = Timed(result)
-            trim()
-        }
-
+        searchCache[key].fresh(120_000L)?.let { return@coroutineScope it }
+        val result = enabled.map { source -> async {
+            runCatching { source.search(query) }.fold(
+                onSuccess = { SourceResult<List<NovelCard>>(source.id, it, null) },
+                onFailure = { SourceResult<List<NovelCard>>(source.id, null, it.message ?: "Source failed") }
+            )
+        }}.awaitAll()
+        if (result.any { !it.data.isNullOrEmpty() }) { searchCache[key]=Timed(result); trim() }
         result
     }
 
     suspend fun latest(): List<SourceResult<List<NovelCard>>> = coroutineScope {
-        latestCache.fresh(120_000L)?.let {
-            return@coroutineScope it
-        }
-
-        val result = sources.enabled()
-            .filter { it.supportsLatest }
-            .map { source ->
-                async {
-                    runCatching { source.latest() }
-                        .fold(
-                            onSuccess = {
-                                SourceResult<List<NovelCard>>(source.id, it, null)
-                            },
-                            onFailure = {
-                                SourceResult<List<NovelCard>>(
-                                    source.id,
-                                    null,
-                                    it.message ?: "Source failed"
-                                )
-                            }
-                        )
-                }
-            }
-            .awaitAll()
-
-        if (result.any { !it.data.isNullOrEmpty() }) {
-            latestCache = Timed(result)
-        }
-
+        latestCache.fresh(120_000L)?.let { return@coroutineScope it }
+        val result = sources.enabled().filter { it.supportsLatest }.map { source -> async {
+            runCatching { source.latest() }.fold(
+                onSuccess = { SourceResult<List<NovelCard>>(source.id, it, null) },
+                onFailure = { SourceResult<List<NovelCard>>(source.id, null, it.message ?: "Source failed") }
+            )
+        }}.awaitAll()
+        if (result.any { !it.data.isNullOrEmpty() }) latestCache=Timed(result)
         result
     }
 
     suspend fun novel(sourceId: String, url: String): NovelDetails {
-        val key = cacheKey(sourceId, url)
+        val key=cacheKey(sourceId,url)
         detailsCache[key].fresh(300_000L)?.let { return it }
-
-        return runCatching { sources.require(sourceId).novel(url) }
-            .fold(
-                onSuccess = { details ->
-                    detailsCache[key] = Timed(details)
-                    if (details.chapters.isNotEmpty()) {
-                        chaptersCache[key] = Timed(details.chapters)
-                        db.saveChapterCatalog(sourceId, url, details.chapters)
-                    }
-                    trim()
-                    details
-                },
-                onFailure = { failure ->
-                    db.offlineNovelDetails(sourceId, url) ?: throw failure
+        return runCatching { sources.require(sourceId).novel(url) }.fold(
+            onSuccess = { details ->
+                detailsCache[key]=Timed(details)
+                if (details.chapters.isNotEmpty()) {
+                    chaptersCache[key]=Timed(details.chapters)
+                    db.saveChapterCatalog(sourceId,url,details.chapters)
                 }
-            )
-    }
-
-    suspend fun chapters(sourceId: String, url: String): List<ChapterRef> {
-        val key = cacheKey(sourceId, url)
-        chaptersCache[key].fresh(600_000L)?.let { return it }
-
-        return runCatching { sources.require(sourceId).chapters(url) }
-            .fold(
-                onSuccess = { chapters ->
-                    chaptersCache[key] = Timed(chapters)
-                    if (chapters.isNotEmpty()) db.saveChapterCatalog(sourceId, url, chapters)
-                    trim()
-                    chapters
-                },
-                onFailure = { failure ->
-                    db.cachedChapterCatalog(sourceId, url).takeIf { it.isNotEmpty() }
-                        ?: db.downloadedChapters(sourceId, url).takeIf { it.isNotEmpty() }
-                        ?: throw failure
-                }
-            )
+                trim(); details
+            },
+            onFailure = { failure -> db.offlineNovelDetails(sourceId,url) ?: throw failure }
+        )
     }
 
     suspend fun refreshNovel(sourceId: String, url: String): NovelRefresh {
-        val key = cacheKey(sourceId, url)
-        val previous = db.cachedChapterCatalog(sourceId, url)
+        val key=cacheKey(sourceId,url)
+        val previous = db.cachedChapterCatalog(sourceId,url)
         val previousUrls = previous.mapTo(mutableSetOf()) { it.url }
+        val details = sources.require(sourceId).novel(url)
+        val newCount = if (previousUrls.isEmpty()) 0 else details.chapters.count { it.url !in previousUrls }
+        detailsCache[key]=Timed(details)
+        chaptersCache[key]=Timed(details.chapters)
+        if (details.chapters.isNotEmpty()) db.saveChapterCatalog(sourceId,url,details.chapters)
+        trim()
+        return NovelRefresh(details,newCount)
+    }
 
-        return runCatching { sources.require(sourceId).novel(url) }.fold(
-            onSuccess = { details ->
-                val newCount = if (previousUrls.isEmpty()) 0
-                    else details.chapters.count { it.url !in previousUrls }
-                detailsCache[key] = Timed(details)
-                chaptersCache[key] = Timed(details.chapters)
-                if (details.chapters.isNotEmpty()) db.saveChapterCatalog(sourceId, url, details.chapters)
-                trim()
-                NovelRefresh(details, newCount)
+    suspend fun chapters(sourceId: String, url: String): List<ChapterRef> {
+        val key=cacheKey(sourceId,url)
+        chaptersCache[key].fresh(600_000L)?.let { return it }
+        return runCatching { sources.require(sourceId).chapters(url) }.fold(
+            onSuccess = { list ->
+                chaptersCache[key]=Timed(list)
+                if (list.isNotEmpty()) db.saveChapterCatalog(sourceId,url,list)
+                trim(); list
             },
             onFailure = { failure ->
-                val cached = detailsCache[key]?.value ?: db.offlineNovelDetails(sourceId, url)
-                if (cached != null) {
-                    val catalog = db.cachedChapterCatalog(sourceId, url)
-                    NovelRefresh(if (catalog.isNotEmpty()) cached.copy(chapters = catalog) else cached, 0)
-                } else throw failure
+                db.cachedChapterCatalog(sourceId,url).takeIf { it.isNotEmpty() }
+                    ?: db.downloadedChapters(sourceId,url).takeIf { it.isNotEmpty() }
+                    ?: throw failure
             }
         )
     }
 
-    suspend fun chapter(ref: ChapterRef): ChapterContent {
-        db.getChapter(ref.sourceId, ref.url)?.let { return it }
-        return sources.require(ref.sourceId).chapter(ref)
+    suspend fun refreshChapters(sourceId: String, url: String): Pair<List<ChapterRef>,Int> {
+        val previous=db.cachedChapterCatalog(sourceId,url)
+        val previousUrls=previous.mapTo(mutableSetOf()) { it.url }
+        val fresh=sources.require(sourceId).chapters(url)
+        val count=if(previousUrls.isEmpty()) 0 else fresh.count { it.url !in previousUrls }
+        if(fresh.isNotEmpty()) {
+            db.saveChapterCatalog(sourceId,url,fresh)
+            chaptersCache[cacheKey(sourceId,url)]=Timed(fresh)
+        }
+        return fresh to count
+    }
+
+    suspend fun chapterLoad(ref: ChapterRef): ChapterLoad {
+        db.getChapter(ref.sourceId,ref.url)?.let { return ChapterLoad(it,"Downloaded") }
+        return ChapterLoad(sources.require(ref.sourceId).chapter(ref),"Network / cache")
+    }
+
+    suspend fun chapter(ref: ChapterRef): ChapterContent = chapterLoad(ref).content
+
+    suspend fun prefetch(ref: ChapterRef) {
+        if (db.isDownloaded(ref.sourceId,ref.url)) return
+        runCatching { sources.require(ref.sourceId).chapter(ref) }
     }
 
     suspend fun downloadChapter(ref: ChapterRef): ChapterContent {
-        db.getChapter(ref.sourceId, ref.url)?.let { return it }
-        val chapter = sources.require(ref.sourceId).chapter(ref)
+        db.getChapter(ref.sourceId,ref.url)?.let { return it }
+        val chapter=sources.require(ref.sourceId).chapter(ref)
         db.saveChapter(chapter)
         return chapter
     }

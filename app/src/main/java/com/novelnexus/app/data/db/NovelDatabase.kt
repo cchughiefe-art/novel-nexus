@@ -8,10 +8,9 @@ import com.novelnexus.app.core.model.ChapterContent
 import com.novelnexus.app.core.model.ChapterRef
 import com.novelnexus.app.core.model.NovelDetails
 
-class NovelDatabase(context: Context) : SQLiteOpenHelper(context, "novel_nexus.db", null, 2) {
+class NovelDatabase(context: Context) : SQLiteOpenHelper(context, "novel_nexus.db", null, 3) {
     override fun onCreate(db: SQLiteDatabase) {
-        db.execSQL(
-            """
+        db.execSQL("""
             CREATE TABLE offline_novels(
               source_id TEXT NOT NULL,
               novel_url TEXT NOT NULL,
@@ -21,10 +20,9 @@ class NovelDatabase(context: Context) : SQLiteOpenHelper(context, "novel_nexus.d
               updated_at INTEGER NOT NULL,
               PRIMARY KEY(source_id, novel_url)
             )
-            """.trimIndent()
-        )
-        db.execSQL(
-            """
+        """.trimIndent())
+
+        db.execSQL("""
             CREATE TABLE offline_chapters(
               source_id TEXT NOT NULL,
               novel_url TEXT NOT NULL,
@@ -36,37 +34,42 @@ class NovelDatabase(context: Context) : SQLiteOpenHelper(context, "novel_nexus.d
               downloaded_at INTEGER NOT NULL,
               PRIMARY KEY(source_id, chapter_url)
             )
-            """.trimIndent()
-        )
-        db.execSQL(
-            """
+        """.trimIndent())
+
+        db.execSQL("""
             CREATE TABLE reading_progress(
               source_id TEXT NOT NULL,
               novel_url TEXT NOT NULL,
               chapter_url TEXT NOT NULL,
               chapter_index INTEGER NOT NULL,
               progress REAL NOT NULL,
+              paragraph_index INTEGER NOT NULL DEFAULT 0,
+              scroll_offset INTEGER NOT NULL DEFAULT 0,
               updated_at INTEGER NOT NULL,
               PRIMARY KEY(source_id, novel_url)
             )
-            """.trimIndent()
-        )
-        db.execSQL(
-            """
+        """.trimIndent())
+
+        db.execSQL("""
             CREATE TABLE bookmarks(
               source_id TEXT NOT NULL,
               novel_url TEXT NOT NULL,
               chapter_url TEXT NOT NULL,
               chapter_index INTEGER NOT NULL,
+              paragraph_index INTEGER NOT NULL DEFAULT 0,
+              scroll_offset INTEGER NOT NULL DEFAULT 0,
               title TEXT NOT NULL,
               created_at INTEGER NOT NULL,
-              PRIMARY KEY(source_id, chapter_url)
+              PRIMARY KEY(source_id, chapter_url, paragraph_index)
             )
-            """.trimIndent()
-        )
-        db.execSQL(
-            """
-            CREATE TABLE chapter_catalog(
+        """.trimIndent())
+
+        createV2Tables(db)
+    }
+
+    private fun createV2Tables(db: SQLiteDatabase) {
+        db.execSQL("""
+            CREATE TABLE IF NOT EXISTS chapter_catalog(
               source_id TEXT NOT NULL,
               novel_url TEXT NOT NULL,
               chapter_url TEXT NOT NULL,
@@ -75,26 +78,38 @@ class NovelDatabase(context: Context) : SQLiteOpenHelper(context, "novel_nexus.d
               fetched_at INTEGER NOT NULL,
               PRIMARY KEY(source_id, novel_url, chapter_url)
             )
-            """.trimIndent()
-        )
+        """.trimIndent())
+
+        db.execSQL("""
+            CREATE TABLE IF NOT EXISTS reading_history(
+              source_id TEXT NOT NULL,
+              novel_url TEXT NOT NULL,
+              chapter_url TEXT NOT NULL,
+              chapter_index INTEGER NOT NULL,
+              title TEXT NOT NULL,
+              opened_at INTEGER NOT NULL,
+              PRIMARY KEY(source_id, novel_url)
+            )
+        """.trimIndent())
+
+        db.execSQL("""
+            CREATE TABLE IF NOT EXISTS reading_stats(
+              day TEXT PRIMARY KEY,
+              seconds_read INTEGER NOT NULL DEFAULT 0,
+              chapters_opened INTEGER NOT NULL DEFAULT 0
+            )
+        """.trimIndent())
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
         if (oldVersion < 2) {
-            db.execSQL(
-                """
-                CREATE TABLE IF NOT EXISTS chapter_catalog(
-                  source_id TEXT NOT NULL,
-                  novel_url TEXT NOT NULL,
-                  chapter_url TEXT NOT NULL,
-                  chapter_index INTEGER NOT NULL,
-                  title TEXT NOT NULL,
-                  fetched_at INTEGER NOT NULL,
-                  PRIMARY KEY(source_id, novel_url, chapter_url)
-                )
-                """.trimIndent()
-            )
+            runCatching { db.execSQL("ALTER TABLE reading_progress ADD COLUMN paragraph_index INTEGER NOT NULL DEFAULT 0") }
+            runCatching { db.execSQL("ALTER TABLE reading_progress ADD COLUMN scroll_offset INTEGER NOT NULL DEFAULT 0") }
+            runCatching { db.execSQL("ALTER TABLE bookmarks ADD COLUMN paragraph_index INTEGER NOT NULL DEFAULT 0") }
+            runCatching { db.execSQL("ALTER TABLE bookmarks ADD COLUMN scroll_offset INTEGER NOT NULL DEFAULT 0") }
+            createV2Tables(db)
         }
+        if (oldVersion < 3) createV2Tables(db)
     }
 
     fun upsertNovel(sourceId: String, novelUrl: String, title: String, coverUrl: String?, author: String?) {
@@ -148,6 +163,18 @@ class NovelDatabase(context: Context) : SQLiteOpenHelper(context, "novel_nexus.d
         ).use { return it.moveToFirst() }
     }
 
+    fun downloadedUrls(sourceId: String, novelUrl: String): Set<String> {
+        readableDatabase.query(
+            "offline_chapters", arrayOf("chapter_url"),
+            "source_id=? AND novel_url=?", arrayOf(sourceId, novelUrl),
+            null, null, null
+        ).use { c ->
+            val out = mutableSetOf<String>()
+            while (c.moveToNext()) out += c.getString(0)
+            return out
+        }
+    }
+
     fun downloadedCount(sourceId: String, novelUrl: String): Int {
         readableDatabase.rawQuery(
             "SELECT COUNT(*) FROM offline_chapters WHERE source_id=? AND novel_url=?",
@@ -186,51 +213,16 @@ class NovelDatabase(context: Context) : SQLiteOpenHelper(context, "novel_nexus.d
         readableDatabase.query(
             "offline_chapters",
             arrayOf("chapter_url", "chapter_index", "title"),
-            "source_id=? AND novel_url=?",
-            arrayOf(sourceId, novelUrl),
-            null,
-            null,
-            "chapter_index ASC"
+            "source_id=? AND novel_url=?", arrayOf(sourceId, novelUrl),
+            null, null, "chapter_index ASC"
         ).use { cursor ->
             val chapters = mutableListOf<ChapterRef>()
             while (cursor.moveToNext()) {
-                chapters += ChapterRef(
-                    sourceId = sourceId,
-                    novelUrl = novelUrl,
-                    title = cursor.getString(2),
-                    url = cursor.getString(0),
-                    index = cursor.getInt(1)
-                )
+                chapters += ChapterRef(sourceId, novelUrl, cursor.getString(2), cursor.getString(0), cursor.getInt(1))
             }
             return chapters
         }
     }
-
-    fun offlineNovelDetails(sourceId: String, novelUrl: String): NovelDetails? {
-        readableDatabase.query(
-            "offline_novels",
-            arrayOf("title", "cover_url", "author"),
-            "source_id=? AND novel_url=?",
-            arrayOf(sourceId, novelUrl),
-            null,
-            null,
-            null,
-            "1"
-        ).use { cursor ->
-            if (!cursor.moveToFirst()) return null
-            return NovelDetails(
-                sourceId = sourceId,
-                title = cursor.getString(0),
-                url = novelUrl,
-                coverUrl = if (cursor.isNull(1)) null else cursor.getString(1),
-                author = if (cursor.isNull(2)) null else cursor.getString(2),
-                description = "",
-                chapters = downloadedChapters(sourceId, novelUrl)
-            )
-        }
-    }
-
-
 
     fun saveChapterCatalog(sourceId: String, novelUrl: String, chapters: List<ChapterRef>) {
         val db = writableDatabase
@@ -238,94 +230,160 @@ class NovelDatabase(context: Context) : SQLiteOpenHelper(context, "novel_nexus.d
         try {
             db.delete("chapter_catalog", "source_id=? AND novel_url=?", arrayOf(sourceId, novelUrl))
             val now = System.currentTimeMillis()
-            chapters.forEach { chapter ->
-                db.insertWithOnConflict(
-                    "chapter_catalog", null, ContentValues().apply {
-                        put("source_id", sourceId)
-                        put("novel_url", novelUrl)
-                        put("chapter_url", chapter.url)
-                        put("chapter_index", chapter.index)
-                        put("title", chapter.title)
-                        put("fetched_at", now)
-                    }, SQLiteDatabase.CONFLICT_REPLACE
-                )
+            chapters.forEach { ch ->
+                db.insertWithOnConflict("chapter_catalog", null, ContentValues().apply {
+                    put("source_id", sourceId)
+                    put("novel_url", novelUrl)
+                    put("chapter_url", ch.url)
+                    put("chapter_index", ch.index)
+                    put("title", ch.title)
+                    put("fetched_at", now)
+                }, SQLiteDatabase.CONFLICT_REPLACE)
             }
             db.setTransactionSuccessful()
-        } finally {
-            db.endTransaction()
-        }
+        } finally { db.endTransaction() }
     }
 
     fun cachedChapterCatalog(sourceId: String, novelUrl: String): List<ChapterRef> {
         readableDatabase.query(
-            "chapter_catalog",
-            arrayOf("chapter_url", "chapter_index", "title"),
-            "source_id=? AND novel_url=?",
-            arrayOf(sourceId, novelUrl), null, null, "chapter_index ASC"
-        ).use { cursor ->
+            "chapter_catalog", arrayOf("chapter_url", "chapter_index", "title"),
+            "source_id=? AND novel_url=?", arrayOf(sourceId, novelUrl),
+            null, null, "chapter_index ASC"
+        ).use { c ->
             val out = mutableListOf<ChapterRef>()
-            while (cursor.moveToNext()) {
-                out += ChapterRef(
-                    sourceId = sourceId, novelUrl = novelUrl,
-                    url = cursor.getString(0), index = cursor.getInt(1), title = cursor.getString(2)
-                )
-            }
+            while (c.moveToNext()) out += ChapterRef(sourceId, novelUrl, c.getString(2), c.getString(0), c.getInt(1))
             return out
         }
     }
 
+    fun offlineNovelDetails(sourceId: String, novelUrl: String): NovelDetails? {
+        readableDatabase.query(
+            "offline_novels", arrayOf("title", "cover_url", "author"),
+            "source_id=? AND novel_url=?", arrayOf(sourceId, novelUrl),
+            null, null, null, "1"
+        ).use { cursor ->
+            if (!cursor.moveToFirst()) return null
+            val catalogue = cachedChapterCatalog(sourceId, novelUrl)
+            return NovelDetails(
+                sourceId = sourceId,
+                title = cursor.getString(0),
+                url = novelUrl,
+                coverUrl = if (cursor.isNull(1)) null else cursor.getString(1),
+                author = if (cursor.isNull(2)) null else cursor.getString(2),
+                description = "",
+                chapters = catalogue.ifEmpty { downloadedChapters(sourceId, novelUrl) }
+            )
+        }
+    }
 
     data class ReadingProgress(
         val chapterUrl: String,
         val chapterIndex: Int,
-        val progress: Float
+        val progress: Float,
+        val paragraphIndex: Int,
+        val scrollOffset: Int
     )
 
     fun getReadingProgress(sourceId: String, novelUrl: String): ReadingProgress? {
         readableDatabase.query(
             "reading_progress",
-            arrayOf("chapter_url", "chapter_index", "progress"),
-            "source_id=? AND novel_url=?",
-            arrayOf(sourceId, novelUrl),
-            null,
-            null,
-            null,
-            "1"
-        ).use { cursor ->
-            if (!cursor.moveToFirst()) return null
-            return ReadingProgress(
-                chapterUrl = cursor.getString(0),
-                chapterIndex = cursor.getInt(1),
-                progress = cursor.getFloat(2).coerceIn(0f, 1f)
-            )
+            arrayOf("chapter_url", "chapter_index", "progress", "paragraph_index", "scroll_offset"),
+            "source_id=? AND novel_url=?", arrayOf(sourceId, novelUrl),
+            null, null, null, "1"
+        ).use { c ->
+            if (!c.moveToFirst()) return null
+            return ReadingProgress(c.getString(0), c.getInt(1), c.getFloat(2).coerceIn(0f,1f), c.getInt(3), c.getInt(4))
         }
     }
 
-
-    fun getProgress(sourceId: String, novelUrl: String): Float {
-        readableDatabase.query(
-            "reading_progress",
-            arrayOf("progress"),
-            "source_id=? AND novel_url=?",
-            arrayOf(sourceId, novelUrl),
-            null,
-            null,
-            null,
-            "1"
-        ).use { cursor ->
-            return if (cursor.moveToFirst()) cursor.getFloat(0).coerceIn(0f, 1f) else 0f
-        }
-    }
-
-
-    fun saveProgress(sourceId: String, novelUrl: String, chapterUrl: String, chapterIndex: Int, progress: Float) {
+    fun saveProgress(
+        sourceId: String,
+        novelUrl: String,
+        chapterUrl: String,
+        chapterIndex: Int,
+        progress: Float,
+        paragraphIndex: Int = 0,
+        scrollOffset: Int = 0
+    ) {
         writableDatabase.insertWithOnConflict("reading_progress", null, ContentValues().apply {
             put("source_id", sourceId)
             put("novel_url", novelUrl)
             put("chapter_url", chapterUrl)
             put("chapter_index", chapterIndex)
-            put("progress", progress.coerceIn(0f, 1f))
+            put("progress", progress.coerceIn(0f,1f))
+            put("paragraph_index", paragraphIndex.coerceAtLeast(0))
+            put("scroll_offset", scrollOffset.coerceAtLeast(0))
             put("updated_at", System.currentTimeMillis())
         }, SQLiteDatabase.CONFLICT_REPLACE)
+    }
+
+    fun toggleBookmark(
+        sourceId: String,
+        novelUrl: String,
+        chapterUrl: String,
+        chapterIndex: Int,
+        paragraphIndex: Int,
+        scrollOffset: Int,
+        title: String
+    ): Boolean {
+        val exists = readableDatabase.rawQuery(
+            "SELECT 1 FROM bookmarks WHERE source_id=? AND chapter_url=? AND paragraph_index=? LIMIT 1",
+            arrayOf(sourceId, chapterUrl, paragraphIndex.toString())
+        ).use { it.moveToFirst() }
+
+        if (exists) {
+            writableDatabase.delete(
+                "bookmarks", "source_id=? AND chapter_url=? AND paragraph_index=?",
+                arrayOf(sourceId, chapterUrl, paragraphIndex.toString())
+            )
+            return false
+        }
+
+        writableDatabase.insertWithOnConflict("bookmarks", null, ContentValues().apply {
+            put("source_id", sourceId)
+            put("novel_url", novelUrl)
+            put("chapter_url", chapterUrl)
+            put("chapter_index", chapterIndex)
+            put("paragraph_index", paragraphIndex)
+            put("scroll_offset", scrollOffset)
+            put("title", title)
+            put("created_at", System.currentTimeMillis())
+        }, SQLiteDatabase.CONFLICT_REPLACE)
+        return true
+    }
+
+    fun isBookmarked(sourceId: String, chapterUrl: String, paragraphIndex: Int): Boolean {
+        return readableDatabase.rawQuery(
+            "SELECT 1 FROM bookmarks WHERE source_id=? AND chapter_url=? AND paragraph_index=? LIMIT 1",
+            arrayOf(sourceId, chapterUrl, paragraphIndex.toString())
+        ).use { it.moveToFirst() }
+    }
+
+    fun recordHistory(sourceId: String, novelUrl: String, chapterUrl: String, chapterIndex: Int, title: String) {
+        writableDatabase.insertWithOnConflict("reading_history", null, ContentValues().apply {
+            put("source_id", sourceId)
+            put("novel_url", novelUrl)
+            put("chapter_url", chapterUrl)
+            put("chapter_index", chapterIndex)
+            put("title", title)
+            put("opened_at", System.currentTimeMillis())
+        }, SQLiteDatabase.CONFLICT_REPLACE)
+    }
+
+    fun addReadingSeconds(seconds: Long) {
+        if (seconds <= 0) return
+        val day = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).format(java.util.Date())
+        val db = writableDatabase
+        db.insertWithOnConflict(
+            "reading_stats", null, ContentValues().apply {
+                put("day", day)
+                put("seconds_read", 0)
+                put("chapters_opened", 0)
+            }, SQLiteDatabase.CONFLICT_IGNORE
+        )
+        db.execSQL(
+            "UPDATE reading_stats SET seconds_read=seconds_read+?, chapters_opened=chapters_opened+1 WHERE day=?",
+            arrayOf(seconds, day)
+        )
     }
 }
