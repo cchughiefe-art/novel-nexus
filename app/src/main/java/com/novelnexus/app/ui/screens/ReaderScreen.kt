@@ -100,6 +100,7 @@ import com.novelnexus.app.ui.reader.ReaderKeyRouter
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.math.abs
@@ -307,7 +308,49 @@ fun ReaderScreen(
         scope.launch { saveProgressNow(); onNavigateChapter(ref) }
     }
 
-    val atEnd by remember { derivedStateOf { if (prefs.mode=="PAGED") pagerState.currentPage==pages.lastIndex else listState.layoutInfo.totalItemsCount>0 && !listState.canScrollForward } }\n\n    LaunchedEffect(chapterUrl,prefs.mode) {\n        if(prefs.mode=="PAGED") snapshotFlow{pagerState.currentPage}.collect{if(it>0)userMoved=true}\n        else snapshotFlow{listState.firstVisibleItemIndex}.collect{if(it>0)userMoved=true}\n    }\n\n    LaunchedEffect(prefs.autoScroll,prefs.autoScrollSpeed,prefs.mode,autoScrollPaused,chapterUrl) {\n        if(!prefs.autoScroll || prefs.mode!="SCROLL" || autoScrollPaused) return@LaunchedEffect\n        while(kotlinx.coroutines.currentCoroutineContext().isActive && listState.canScrollForward){\n            listState.scrollBy(prefs.autoScrollSpeed.coerceIn(10f,180f)/10f); delay(100)\n        }\n    }\n\n    LaunchedEffect(atEnd,userMoved,prefs.autoNext,prefs.autoNextSeconds,prefs.continuousMode,next?.url,chapterUrl) {\n        autoNextCountdown=null\n        val target=next ?: return@LaunchedEffect\n        if(!atEnd || !userMoved) return@LaunchedEffect\n        if(prefs.continuousMode){ delay(if(prefs.reducedMotion)50 else 250); navigate(target); return@LaunchedEffect }\n        if(!prefs.autoNext) return@LaunchedEffect\n        for(left in prefs.autoNextSeconds.coerceIn(2,15) downTo 1){ autoNextCountdown=left; delay(1000); if(!atEnd) return@LaunchedEffect }\n        autoNextCountdown=null; navigate(target)\n    }\n\n    var swipeDistance=0f\n    val readerGestureModifier=Modifier\n        .pointerInput(prefs.tapLeftAction,prefs.tapRightAction){\n            detectTapGestures{point->\n                val third=size.width/3f\n                when{\n                    point.x<third && prefs.tapLeftAction=="CHAPTER" -> previous?.let(::navigate)\n                    point.x>third*2f && prefs.tapRightAction=="CHAPTER" -> next?.let(::navigate)\n                    point.x<third && prefs.tapLeftAction=="PAGE" -> scope.launch{ if(prefs.mode=="PAGED") pagerState.animateScrollToPage((pagerState.currentPage-1).coerceAtLeast(0)) else listState.animateScrollBy(-700f) }\n                    point.x>third*2f && prefs.tapRightAction=="PAGE" -> scope.launch{ if(prefs.mode=="PAGED") pagerState.animateScrollToPage((pagerState.currentPage+1).coerceAtMost(pages.lastIndex)) else listState.animateScrollBy(700f) }\n                    else -> showChrome=!showChrome\n                }\n            }\n        }\n        .pointerInput(prefs.swipeChapter){\n            if(prefs.swipeChapter) detectHorizontalDragGestures(onDragStart={swipeDistance=0f},onHorizontalDrag={_,a->swipeDistance+=a},onDragEnd={ if(abs(swipeDistance)>140f){ if(swipeDistance>0) previous?.let(::navigate) else next?.let(::navigate)} })\n        }\n\n    ModalNavigationDrawer(
+    val atEnd by remember { derivedStateOf { if (prefs.mode=="PAGED") pagerState.currentPage==pages.lastIndex else listState.layoutInfo.totalItemsCount>0 && !listState.canScrollForward } }
+
+    LaunchedEffect(chapterUrl,prefs.mode) {
+        if(prefs.mode=="PAGED") snapshotFlow{pagerState.currentPage}.collect{if(it>0)userMoved=true}
+        else snapshotFlow{listState.firstVisibleItemIndex}.collect{if(it>0)userMoved=true}
+    }
+
+    LaunchedEffect(prefs.autoScroll,prefs.autoScrollSpeed,prefs.mode,autoScrollPaused,chapterUrl) {
+        if(!prefs.autoScroll || prefs.mode!="SCROLL" || autoScrollPaused) return@LaunchedEffect
+        while(kotlinx.coroutines.currentCoroutineContext().isActive && listState.canScrollForward){
+            listState.scrollBy(prefs.autoScrollSpeed.coerceIn(10f,180f)/10f); delay(100)
+        }
+    }
+
+    LaunchedEffect(atEnd,userMoved,prefs.autoNext,prefs.autoNextSeconds,prefs.continuousMode,next?.url,chapterUrl) {
+        autoNextCountdown=null
+        val target=next ?: return@LaunchedEffect
+        if(!atEnd || !userMoved) return@LaunchedEffect
+        if(prefs.continuousMode){ delay(if(prefs.reducedMotion)50 else 250); navigate(target); return@LaunchedEffect }
+        if(!prefs.autoNext) return@LaunchedEffect
+        for(left in prefs.autoNextSeconds.coerceIn(2,15) downTo 1){ autoNextCountdown=left; delay(1000); if(!atEnd) return@LaunchedEffect }
+        autoNextCountdown=null; navigate(target)
+    }
+
+    var swipeDistance=0f
+    val readerGestureModifier=Modifier
+        .pointerInput(prefs.tapLeftAction,prefs.tapRightAction){
+            detectTapGestures{point->
+                val third=size.width/3f
+                when{
+                    point.x<third && prefs.tapLeftAction=="CHAPTER" -> previous?.let(::navigate)
+                    point.x>third*2f && prefs.tapRightAction=="CHAPTER" -> next?.let(::navigate)
+                    point.x<third && prefs.tapLeftAction=="PAGE" -> scope.launch{ if(prefs.mode=="PAGED") pagerState.animateScrollToPage((pagerState.currentPage-1).coerceAtLeast(0)) else listState.animateScrollBy(-700f) }
+                    point.x>third*2f && prefs.tapRightAction=="PAGE" -> scope.launch{ if(prefs.mode=="PAGED") pagerState.animateScrollToPage((pagerState.currentPage+1).coerceAtMost(pages.lastIndex)) else listState.animateScrollBy(700f) }
+                    else -> showChrome=!showChrome
+                }
+            }
+        }
+        .pointerInput(prefs.swipeChapter){
+            if(prefs.swipeChapter) detectHorizontalDragGestures(onDragStart={swipeDistance=0f},onHorizontalDrag={_,a->swipeDistance+=a},onDragEnd={ if(abs(swipeDistance)>140f){ if(swipeDistance>0) previous?.let(::navigate) else next?.let(::navigate)} })
+        }
+
+    ModalNavigationDrawer(
         drawerState=drawerState,
         gesturesEnabled=true,
         drawerContent={
