@@ -8,7 +8,7 @@ import com.novelnexus.app.core.model.ChapterContent
 import com.novelnexus.app.core.model.ChapterRef
 import com.novelnexus.app.core.model.NovelDetails
 
-class NovelDatabase(context: Context) : SQLiteOpenHelper(context, "novel_nexus.db", null, 1) {
+class NovelDatabase(context: Context) : SQLiteOpenHelper(context, "novel_nexus.db", null, 2) {
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL(
             """
@@ -64,9 +64,38 @@ class NovelDatabase(context: Context) : SQLiteOpenHelper(context, "novel_nexus.d
             )
             """.trimIndent()
         )
+        db.execSQL(
+            """
+            CREATE TABLE chapter_catalog(
+              source_id TEXT NOT NULL,
+              novel_url TEXT NOT NULL,
+              chapter_url TEXT NOT NULL,
+              chapter_index INTEGER NOT NULL,
+              title TEXT NOT NULL,
+              fetched_at INTEGER NOT NULL,
+              PRIMARY KEY(source_id, novel_url, chapter_url)
+            )
+            """.trimIndent()
+        )
     }
 
-    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) = Unit
+    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
+        if (oldVersion < 2) {
+            db.execSQL(
+                """
+                CREATE TABLE IF NOT EXISTS chapter_catalog(
+                  source_id TEXT NOT NULL,
+                  novel_url TEXT NOT NULL,
+                  chapter_url TEXT NOT NULL,
+                  chapter_index INTEGER NOT NULL,
+                  title TEXT NOT NULL,
+                  fetched_at INTEGER NOT NULL,
+                  PRIMARY KEY(source_id, novel_url, chapter_url)
+                )
+                """.trimIndent()
+            )
+        }
+    }
 
     fun upsertNovel(sourceId: String, novelUrl: String, title: String, coverUrl: String?, author: String?) {
         writableDatabase.insertWithOnConflict("offline_novels", null, ContentValues().apply {
@@ -198,6 +227,50 @@ class NovelDatabase(context: Context) : SQLiteOpenHelper(context, "novel_nexus.d
                 description = "",
                 chapters = downloadedChapters(sourceId, novelUrl)
             )
+        }
+    }
+
+
+
+    fun saveChapterCatalog(sourceId: String, novelUrl: String, chapters: List<ChapterRef>) {
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            db.delete("chapter_catalog", "source_id=? AND novel_url=?", arrayOf(sourceId, novelUrl))
+            val now = System.currentTimeMillis()
+            chapters.forEach { chapter ->
+                db.insertWithOnConflict(
+                    "chapter_catalog", null, ContentValues().apply {
+                        put("source_id", sourceId)
+                        put("novel_url", novelUrl)
+                        put("chapter_url", chapter.url)
+                        put("chapter_index", chapter.index)
+                        put("title", chapter.title)
+                        put("fetched_at", now)
+                    }, SQLiteDatabase.CONFLICT_REPLACE
+                )
+            }
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+    }
+
+    fun cachedChapterCatalog(sourceId: String, novelUrl: String): List<ChapterRef> {
+        readableDatabase.query(
+            "chapter_catalog",
+            arrayOf("chapter_url", "chapter_index", "title"),
+            "source_id=? AND novel_url=?",
+            arrayOf(sourceId, novelUrl), null, null, "chapter_index ASC"
+        ).use { cursor ->
+            val out = mutableListOf<ChapterRef>()
+            while (cursor.moveToNext()) {
+                out += ChapterRef(
+                    sourceId = sourceId, novelUrl = novelUrl,
+                    url = cursor.getString(0), index = cursor.getInt(1), title = cursor.getString(2)
+                )
+            }
+            return out
         }
     }
 

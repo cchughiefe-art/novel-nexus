@@ -21,6 +21,11 @@ class NovelRepository(
         val error: String?
     )
 
+    data class NovelRefresh(
+        val details: NovelDetails,
+        val newChapterCount: Int
+    )
+
     private data class Timed<T>(
         val value: T,
         val at: Long = System.currentTimeMillis()
@@ -124,6 +129,7 @@ class NovelRepository(
                     detailsCache[key] = Timed(details)
                     if (details.chapters.isNotEmpty()) {
                         chaptersCache[key] = Timed(details.chapters)
+                        db.saveChapterCatalog(sourceId, url, details.chapters)
                     }
                     trim()
                     details
@@ -142,15 +148,41 @@ class NovelRepository(
             .fold(
                 onSuccess = { chapters ->
                     chaptersCache[key] = Timed(chapters)
+                    if (chapters.isNotEmpty()) db.saveChapterCatalog(sourceId, url, chapters)
                     trim()
                     chapters
                 },
                 onFailure = { failure ->
-                    db.downloadedChapters(sourceId, url)
-                        .takeIf { it.isNotEmpty() }
+                    db.cachedChapterCatalog(sourceId, url).takeIf { it.isNotEmpty() }
+                        ?: db.downloadedChapters(sourceId, url).takeIf { it.isNotEmpty() }
                         ?: throw failure
                 }
             )
+    }
+
+    suspend fun refreshNovel(sourceId: String, url: String): NovelRefresh {
+        val key = cacheKey(sourceId, url)
+        val previous = db.cachedChapterCatalog(sourceId, url)
+        val previousUrls = previous.mapTo(mutableSetOf()) { it.url }
+
+        return runCatching { sources.require(sourceId).novel(url) }.fold(
+            onSuccess = { details ->
+                val newCount = if (previousUrls.isEmpty()) 0
+                    else details.chapters.count { it.url !in previousUrls }
+                detailsCache[key] = Timed(details)
+                chaptersCache[key] = Timed(details.chapters)
+                if (details.chapters.isNotEmpty()) db.saveChapterCatalog(sourceId, url, details.chapters)
+                trim()
+                NovelRefresh(details, newCount)
+            },
+            onFailure = { failure ->
+                val cached = detailsCache[key]?.value ?: db.offlineNovelDetails(sourceId, url)
+                if (cached != null) {
+                    val catalog = db.cachedChapterCatalog(sourceId, url)
+                    NovelRefresh(if (catalog.isNotEmpty()) cached.copy(chapters = catalog) else cached, 0)
+                } else throw failure
+            }
+        )
     }
 
     suspend fun chapter(ref: ChapterRef): ChapterContent {
