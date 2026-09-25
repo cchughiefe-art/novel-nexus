@@ -13,26 +13,32 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.ArrowBack
+import androidx.compose.material.icons.rounded.CheckCircle
+import androidx.compose.material.icons.rounded.CloudDownload
 import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.MenuBook
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
-import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -45,6 +51,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -65,95 +72,213 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-private data class DownloadRange(val from: Int, val to: Int, val label: String)
+private data class DownloadAmount(val label: String, val count: Int?)
 
-private fun enqueueRange(context: Context, novel: NovelDetails, from: Int, to: Int) {
+private val downloadAmounts = listOf(
+    DownloadAmount("Next 10", 10),
+    DownloadAmount("Next 25", 25),
+    DownloadAmount("Next 50", 50),
+    DownloadAmount("Next 100", 100),
+    DownloadAmount("All remaining", null)
+)
+
+private fun canonicalChapters(novel: NovelDetails): List<ChapterRef> =
+    novel.chapters
+        .distinctBy { it.url }
+        .sortedWith(compareBy({ it.index }, { it.url }))
+
+private fun cleanedChapterTitle(title: String): String {
+    var value = title.trim()
+    value = value.replace(
+        Regex("""^chapter\s+\d+\s*[:\-–—]?\s*""", RegexOption.IGNORE_CASE),
+        ""
+    )
+    value = value.replace(Regex("""^\d+\s*[:\-–—]\s*"""), "")
+    return value.ifBlank { "Untitled chapter" }
+}
+
+private fun enqueueFrom(
+    context: Context,
+    novel: NovelDetails,
+    start: ChapterRef,
+    limit: Int?
+) {
     val input = Data.Builder()
         .putString("sourceId", novel.sourceId)
         .putString("novelUrl", novel.url)
         .putString("title", novel.title)
         .putString("coverUrl", novel.coverUrl)
         .putString("author", novel.author)
-        .putInt("from", from)
-        .putInt("to", to)
+        .putString("startUrl", start.url)
+        .putInt("startIndex", start.index)
+        .putInt("limit", limit ?: -1)
         .build()
 
     val request = OneTimeWorkRequestBuilder<NovelDownloadWorker>()
-        .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
+        .setConstraints(
+            Constraints.Builder()
+                .setRequiredNetworkType(NetworkType.CONNECTED)
+                .build()
+        )
         .setInputData(input)
         .addTag("novel-download")
         .addTag("novel:${novel.sourceId}:${novel.url.hashCode()}")
-        .addTag("range:$from-$to")
+        .addTag("start:${start.url.hashCode()}")
         .build()
 
     WorkManager.getInstance(context).enqueue(request)
 }
 
 @Composable
-private fun DownloadPicker(
+private fun DownloadFromDialog(
     novel: NovelDetails,
+    start: ChapterRef,
     onDismiss: () -> Unit,
-    onDownloadSelected: (List<DownloadRange>) -> Unit,
-    onDownloadAll: () -> Unit
+    onConfirm: (Int?) -> Unit
 ) {
-    val canonical = remember(novel.chapters) { novel.chapters.sortedBy { it.index } }
-    val groups = remember(canonical) {
-        canonical.chunked(10).map { chunk ->
-            val first = chunk.first()
-            val last = chunk.last()
-            DownloadRange(
-                first.index,
-                last.index,
-                if (first.index == last.index) "Chapter ${first.index + 1}"
-                else "Chapters ${first.index + 1}–${last.index + 1}"
-            )
-        }
+    val canonical = remember(novel.chapters) { canonicalChapters(novel) }
+    val startPosition = canonical.indexOfFirst { it.url == start.url }.coerceAtLeast(0)
+    val startNumber = startPosition + 1
+    val remaining = (canonical.size - startPosition).coerceAtLeast(1)
+    var selected by remember(start.url) {
+        mutableStateOf(downloadAmounts.first())
     }
-    var selected by remember { mutableStateOf<Set<Int>>(emptySet()) }
+
+    val count = selected.count?.coerceAtMost(remaining) ?: remaining
+    val endNumber = startNumber + count - 1
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Choose chapters") },
+        title = { Text("Download from Chapter $startNumber") },
         text = {
-            LazyColumn(modifier = Modifier.height(360.dp)) {
-                itemsIndexed(groups) { index, group ->
-                    Row(
-                        Modifier.fillMaxWidth().clickable {
-                            selected = if (index in selected) selected - index else selected + index
-                        }.padding(vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Checkbox(
-                            checked = index in selected,
-                            onCheckedChange = { checked ->
-                                selected = if (checked) selected + index else selected - index
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(
+                    "Downloads move forward only: Chapter $startNumber, " +
+                        "${startNumber + 1}, ${startNumber + 2}…",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                Text(
+                    cleanedChapterTitle(start.title),
+                    fontWeight = FontWeight.SemiBold
+                )
+
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    downloadAmounts.forEach { amount ->
+                        FilterChip(
+                            selected = selected == amount,
+                            onClick = { selected = amount },
+                            label = {
+                                val shown = amount.count?.coerceAtMost(remaining)
+                                Text(
+                                    if (shown == null) {
+                                        "${amount.label} ($remaining)"
+                                    } else {
+                                        "${amount.label} ($shown)"
+                                    }
+                                )
                             }
                         )
-                        Column(Modifier.padding(start = 8.dp)) {
-                            Text(group.label, fontWeight = FontWeight.SemiBold)
-                            Text(
-                                "${group.to - group.from + 1} chapter(s)",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
+                    }
+                }
+
+                Surface(
+                    shape = RoundedCornerShape(16.dp),
+                    color = MaterialTheme.colorScheme.primaryContainer
+                ) {
+                    Column(Modifier.fillMaxWidth().padding(14.dp)) {
+                        Text(
+                            "Chapter $startNumber → Chapter $endNumber",
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onPrimaryContainer
+                        )
+                        Text(
+                            "$count chapter${if (count == 1) "" else "s"} in exact reading order",
+                            color = MaterialTheme.colorScheme.onPrimaryContainer
+                        )
                     }
                 }
             }
         },
         confirmButton = {
-            TextButton(
-                enabled = selected.isNotEmpty(),
-                onClick = {
-                    onDownloadSelected(selected.sorted().mapNotNull { groups.getOrNull(it) })
-                }
-            ) { Text("Download selected") }
+            Button(onClick = { onConfirm(selected.count) }) {
+                Icon(Icons.Rounded.CloudDownload, null)
+                Text(" Start download", modifier = Modifier.padding(start = 6.dp))
+            }
         },
         dismissButton = {
-            Row {
-                TextButton(onClick = onDownloadAll) { Text("Download all") }
-                TextButton(onClick = onDismiss) { Text("Cancel") }
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        }
+    )
+}
+
+@Composable
+private fun StartChapterPicker(
+    novel: NovelDetails,
+    onDismiss: () -> Unit,
+    onPick: (ChapterRef) -> Unit
+) {
+    val canonical = remember(novel.chapters) { canonicalChapters(novel) }
+    var query by remember { mutableStateOf("") }
+
+    val shown = remember(canonical, query) {
+        if (query.isBlank()) canonical
+        else canonical.filterIndexed { index, chapter ->
+            val number = index + 1
+            number.toString() == query.trim() ||
+                chapter.title.contains(query, ignoreCase = true)
+        }
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Choose starting chapter") },
+        text = {
+            Column {
+                OutlinedTextField(
+                    value = query,
+                    onValueChange = { query = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    leadingIcon = { Icon(Icons.Rounded.Search, null) },
+                    placeholder = { Text("Chapter number or title") },
+                    singleLine = true
+                )
+
+                LazyColumn(
+                    modifier = Modifier.height(380.dp).padding(top = 8.dp)
+                ) {
+                    itemsIndexed(shown, key = { _, it -> it.url }) { _, chapter ->
+                        val actualNumber =
+                            canonical.indexOfFirst { it.url == chapter.url } + 1
+
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .clickable { onPick(chapter) }
+                                .padding(vertical = 11.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                actualNumber.toString(),
+                                color = MaterialTheme.colorScheme.primary,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.width(52.dp)
+                            )
+                            Text(
+                                cleanedChapterTitle(chapter.title),
+                                modifier = Modifier.weight(1f),
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                        HorizontalDivider()
+                    }
+                }
             }
+        },
+        confirmButton = {},
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Close") }
         }
     )
 }
@@ -168,14 +293,26 @@ fun NovelDetailScreen(
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+
     var loading by remember { mutableStateOf(true) }
     var refreshing by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var novel by remember { mutableStateOf<NovelDetails?>(null) }
-    var progress by remember { mutableStateOf<NovelDatabase.ReadingProgress?>(null) }
+    var progress by remember {
+        mutableStateOf<NovelDatabase.ReadingProgress?>(null)
+    }
+    var downloaded by remember { mutableStateOf<Set<String>>(emptySet()) }
     var chapterFilter by remember { mutableStateOf("") }
-    var showDownloads by remember { mutableStateOf(false) }
     var newChapterCount by remember { mutableStateOf(0) }
+
+    var pickStart by remember { mutableStateOf(false) }
+    var downloadStart by remember { mutableStateOf<ChapterRef?>(null) }
+
+    suspend fun loadDownloaded() {
+        downloaded = withContext(Dispatchers.IO) {
+            graph.repository.db().downloadedUrls(sourceId, url)
+        }
+    }
 
     suspend fun refresh() {
         refreshing = true
@@ -185,166 +322,476 @@ fun NovelDetailScreen(
                 newChapterCount = it.newChapterCount
                 error = null
             }
-            .onFailure { error = it.message ?: "Could not refresh this novel." }
+            .onFailure {
+                error = it.message ?: "Could not refresh this novel."
+                if (novel == null) {
+                    novel = runCatching {
+                        graph.repository.novel(sourceId, url)
+                    }.getOrNull()
+                }
+            }
+        loadDownloaded()
         refreshing = false
     }
 
     LaunchedEffect(sourceId, url) {
         loading = true
-        refresh()
+        novel = runCatching {
+            graph.repository.novel(sourceId, url)
+        }.getOrNull()
+
         progress = withContext(Dispatchers.IO) {
             graph.repository.db().getReadingProgress(sourceId, url)
         }
+
+        loadDownloaded()
+
+        if (novel == null) refresh()
         loading = false
     }
 
     if (loading && novel == null) {
-        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
+        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            CircularProgressIndicator()
+        }
         return
     }
 
     val item = novel
     if (item == null) {
-        Column(Modifier.fillMaxSize().statusBarsPadding().padding(18.dp)) {
-            IconButton(onClick = onBack) { Icon(Icons.Rounded.ArrowBack, "Back") }
-            Text("Could not open novel", style = MaterialTheme.typography.titleLarge)
-            Text(error.orEmpty(), color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Column(
+            Modifier.fillMaxSize().statusBarsPadding().padding(20.dp)
+        ) {
+            IconButton(onClick = onBack) {
+                Icon(Icons.Rounded.ArrowBack, "Back")
+            }
+            Text(
+                "Could not open novel",
+                style = MaterialTheme.typography.headlineMedium
+            )
+            Text(
+                error.orEmpty(),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 8.dp)
+            )
         }
         return
     }
 
-    if (showDownloads) {
-        DownloadPicker(
+    val canonical = remember(item.chapters) {
+        canonicalChapters(item)
+    }
+
+    val chapterNumberByUrl = remember(canonical) {
+        canonical.mapIndexed { index, chapter ->
+            chapter.url to (index + 1)
+        }.toMap()
+    }
+
+    val filtered = remember(canonical, chapterFilter) {
+        if (chapterFilter.isBlank()) canonical
+        else canonical.filter { chapter ->
+            val number = chapterNumberByUrl[chapter.url]
+            number?.toString() == chapterFilter.trim() ||
+                chapter.title.contains(chapterFilter, ignoreCase = true)
+        }
+    }
+
+    val resumeChapter = progress?.let { saved ->
+        canonical.firstOrNull { it.url == saved.chapterUrl }
+            ?: canonical.firstOrNull { it.index == saved.chapterIndex }
+    }
+
+    if (pickStart) {
+        StartChapterPicker(
             novel = item,
-            onDismiss = { showDownloads = false },
-            onDownloadSelected = { ranges ->
-                ranges.forEach { enqueueRange(context, item, it.from, it.to) }
-                showDownloads = false
-            },
-            onDownloadAll = {
-                val c = item.chapters.sortedBy { it.index }
-                if (c.isNotEmpty()) enqueueRange(context, item, c.first().index, c.last().index)
-                showDownloads = false
+            onDismiss = { pickStart = false },
+            onPick = {
+                pickStart = false
+                downloadStart = it
             }
         )
     }
 
-    val filtered = remember(item.chapters, chapterFilter) {
-        val matching = if (chapterFilter.isBlank()) item.chapters else item.chapters.filter {
-            it.title.contains(chapterFilter, true) || (it.index + 1).toString() == chapterFilter.trim()
-        }
-        matching.sortedBy { it.index }
+    downloadStart?.let { start ->
+        DownloadFromDialog(
+            novel = item,
+            start = start,
+            onDismiss = { downloadStart = null },
+            onConfirm = { count ->
+                enqueueFrom(context, item, start, count)
+                downloadStart = null
+            }
+        )
     }
 
-    val resumeChapter = progress?.let { saved ->
-        item.chapters.firstOrNull { it.url == saved.chapterUrl }
-            ?: item.chapters.firstOrNull { it.index == saved.chapterIndex }
-    }
-
-    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 30.dp)) {
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(bottom = 36.dp)
+    ) {
         item {
-            Box(Modifier.fillMaxWidth().height(340.dp).background(MaterialTheme.colorScheme.surfaceVariant)) {
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .height(330.dp)
+                    .background(MaterialTheme.colorScheme.surfaceVariant)
+            ) {
                 if (!item.coverUrl.isNullOrBlank()) {
-                    AsyncImage(item.coverUrl, item.title, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+                    AsyncImage(
+                        model = item.coverUrl,
+                        contentDescription = item.title,
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = ContentScale.Crop
+                    )
                 }
-                Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(
-                    androidx.compose.ui.graphics.Color(0x44000000),
-                    androidx.compose.ui.graphics.Color(0x77000000),
-                    androidx.compose.ui.graphics.Color(0xF0000000)
-                ))))
+
+                Box(
+                    Modifier.fillMaxSize().background(
+                        Brush.verticalGradient(
+                            listOf(
+                                Color(0x22000000),
+                                Color(0x55000000),
+                                Color(0xF0000000)
+                            )
+                        )
+                    )
+                )
+
                 IconButton(
                     onClick = onBack,
-                    modifier = Modifier.statusBarsPadding().padding(8.dp)
-                        .background(androidx.compose.ui.graphics.Color(0x66000000), RoundedCornerShape(50))
-                ) { Icon(Icons.Rounded.ArrowBack, "Back", tint = androidx.compose.ui.graphics.Color.White) }
-                Column(Modifier.align(Alignment.BottomStart).padding(20.dp)) {
-                    Text(graph.sources.get(sourceId)?.name ?: sourceId,
+                    modifier = Modifier
+                        .statusBarsPadding()
+                        .padding(10.dp)
+                        .background(
+                            Color(0x77000000),
+                            RoundedCornerShape(50)
+                        )
+                ) {
+                    Icon(
+                        Icons.Rounded.ArrowBack,
+                        "Back",
+                        tint = Color.White
+                    )
+                }
+
+                Column(
+                    Modifier
+                        .align(Alignment.BottomStart)
+                        .padding(horizontal = 20.dp, vertical = 18.dp)
+                ) {
+                    Text(
+                        graph.sources.get(sourceId)?.name ?: sourceId,
                         style = MaterialTheme.typography.labelLarge,
-                        color = androidx.compose.ui.graphics.Color(0xFFFFC7B9))
-                    Text(item.title, style = MaterialTheme.typography.headlineMedium,
-                        color = androidx.compose.ui.graphics.Color.White, maxLines = 3,
-                        overflow = TextOverflow.Ellipsis)
+                        color = Color(0xFFBDD0FF)
+                    )
+                    Text(
+                        item.title,
+                        style = MaterialTheme.typography.headlineMedium,
+                        color = Color.White,
+                        fontWeight = FontWeight.Black,
+                        maxLines = 3,
+                        overflow = TextOverflow.Ellipsis
+                    )
                     item.author?.takeIf { it.isNotBlank() }?.let {
-                        Text(it, color = androidx.compose.ui.graphics.Color(0xFFE7E1DE),
-                            modifier = Modifier.padding(top = 5.dp))
+                        Text(
+                            it,
+                            color = Color(0xFFE7E9F0),
+                            modifier = Modifier.padding(top = 5.dp)
+                        )
                     }
                 }
             }
 
-            Column(Modifier.padding(horizontal = 18.dp, vertical = 18.dp)) {
+            Column(
+                Modifier.padding(horizontal = 18.dp, vertical = 18.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp)
+            ) {
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     Button(
-                        onClick = { (resumeChapter ?: item.chapters.minByOrNull { it.index })?.let(onRead) },
-                        enabled = item.chapters.isNotEmpty(), modifier = Modifier.weight(1f)
+                        onClick = {
+                            (resumeChapter ?: canonical.firstOrNull())
+                                ?.let(onRead)
+                        },
+                        enabled = canonical.isNotEmpty(),
+                        modifier = Modifier.weight(1f)
                     ) {
                         Icon(Icons.Rounded.MenuBook, null)
-                        Text(if (resumeChapter != null) " Continue" else " Read")
+                        Text(
+                            if (resumeChapter != null) {
+                                " Continue"
+                            } else {
+                                " Read now"
+                            },
+                            modifier = Modifier.padding(start = 5.dp)
+                        )
                     }
+
                     FilledTonalButton(
-                        onClick = { showDownloads = true },
-                        enabled = item.chapters.isNotEmpty(), modifier = Modifier.weight(1f)
+                        onClick = { pickStart = true },
+                        enabled = canonical.isNotEmpty(),
+                        modifier = Modifier.weight(1f)
                     ) {
                         Icon(Icons.Rounded.Download, null)
-                        Text(" Download")
+                        Text(
+                            " Download",
+                            modifier = Modifier.padding(start = 5.dp)
+                        )
+                    }
+                }
+
+                Surface(
+                    shape = RoundedCornerShape(20.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant
+                ) {
+                    Row(
+                        Modifier.fillMaxWidth().padding(16.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column {
+                            Text(
+                                canonical.size.toString(),
+                                style = MaterialTheme.typography.titleLarge,
+                                fontWeight = FontWeight.Black
+                            )
+                            Text(
+                                "chapters",
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+
+                        Column(horizontalAlignment = Alignment.End) {
+                            Text(
+                                downloaded.size.toString(),
+                                style = MaterialTheme.typography.titleLarge,
+                                fontWeight = FontWeight.Black,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                            Text(
+                                "offline",
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+
+                if (resumeChapter != null) {
+                    val resumeNumber =
+                        chapterNumberByUrl[resumeChapter.url] ?: 1
+
+                    Surface(
+                        shape = RoundedCornerShape(18.dp),
+                        color = MaterialTheme.colorScheme.primaryContainer,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onRead(resumeChapter) }
+                    ) {
+                        Column(Modifier.padding(15.dp)) {
+                            Text(
+                                "CONTINUE READING",
+                                style = MaterialTheme.typography.labelLarge,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                            Text(
+                                "Chapter $resumeNumber · " +
+                                    cleanedChapterTitle(resumeChapter.title),
+                                fontWeight = FontWeight.Bold,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.padding(top = 4.dp)
+                            )
+                        }
                     }
                 }
 
                 if (newChapterCount > 0) {
                     Text(
-                        "+$newChapterCount new chapter${if (newChapterCount == 1) "" else "s"}",
+                        "+$newChapterCount new chapter" +
+                            if (newChapterCount == 1) "" else "s" +
+                                " found",
                         style = MaterialTheme.typography.labelLarge,
-                        color = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.padding(top = 12.dp)
+                        color = MaterialTheme.colorScheme.primary
                     )
                 }
-                if (resumeChapter != null) {
-                    Text("Resume: ${resumeChapter.title}", style = MaterialTheme.typography.labelLarge,
-                        color = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(top = 10.dp))
-                }
+
                 if (item.genres.isNotEmpty()) {
-                    Text(item.genres.take(6).joinToString("  •  "),
+                    Text(
+                        item.genres.take(6).joinToString("  •  "),
                         style = MaterialTheme.typography.labelLarge,
-                        color = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(top = 16.dp))
-                }
-                if (item.description.isNotBlank()) {
-                    Spacer(Modifier.height(20.dp))
-                    Text("About", style = MaterialTheme.typography.titleLarge)
-                    Text(item.description, color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(top = 8.dp), maxLines = 10, overflow = TextOverflow.Ellipsis)
+                        color = MaterialTheme.colorScheme.primary
+                    )
                 }
 
-                Spacer(Modifier.height(22.dp))
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    Text("Chapters", style = MaterialTheme.typography.titleLarge)
-                    Text("${item.chapters.size}", style = MaterialTheme.typography.labelLarge,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(start = 8.dp))
-                    Spacer(Modifier.weight(1f))
-                    IconButton(enabled = !refreshing, onClick = { scope.launch { refresh() } }) {
-                        if (refreshing) CircularProgressIndicator(modifier = Modifier.padding(8.dp))
-                        else Icon(Icons.Rounded.Refresh, "Check for new chapters")
+                if (item.description.isNotBlank()) {
+                    Text(
+                        "About",
+                        style = MaterialTheme.typography.titleLarge
+                    )
+                    Text(
+                        item.description,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 8,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+
+                Row(
+                    Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        "Chapters",
+                        style = MaterialTheme.typography.titleLarge,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Text(
+                        "1 → ${canonical.size}",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    IconButton(
+                        enabled = !refreshing,
+                        onClick = { scope.launch { refresh() } }
+                    ) {
+                        if (refreshing) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(20.dp),
+                                strokeWidth = 2.dp
+                            )
+                        } else {
+                            Icon(
+                                Icons.Rounded.Refresh,
+                                "Check for new chapters"
+                            )
+                        }
                     }
                 }
 
                 OutlinedTextField(
-                    value = chapterFilter, onValueChange = { chapterFilter = it },
-                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp), singleLine = true,
-                    shape = RoundedCornerShape(16.dp),
-                    leadingIcon = { Icon(Icons.Rounded.Search, null) },
-                    placeholder = { Text("Find chapter number or title") }
+                    value = chapterFilter,
+                    onValueChange = { chapterFilter = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    shape = RoundedCornerShape(18.dp),
+                    leadingIcon = {
+                        Icon(Icons.Rounded.Search, null)
+                    },
+                    placeholder = {
+                        Text("Find chapter number or title")
+                    }
+                )
+
+                Text(
+                    "Tap a chapter to read. Tap its download icon to " +
+                        "download forward from that exact chapter.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.bodyMedium
                 )
             }
         }
 
         items(filtered, key = { it.url }) { chapter ->
+            val number = chapterNumberByUrl[chapter.url] ?: 1
+            val isDownloaded = chapter.url in downloaded
+            val isCurrent = resumeChapter?.url == chapter.url
+
             Row(
-                Modifier.fillMaxWidth().clickable { onRead(chapter) }
-                    .padding(horizontal = 18.dp, vertical = 14.dp),
+                Modifier
+                    .fillMaxWidth()
+                    .background(
+                        if (isCurrent) {
+                            MaterialTheme.colorScheme.primaryContainer
+                                .copy(alpha = 0.45f)
+                        } else {
+                            Color.Transparent
+                        }
+                    )
+                    .clickable { onRead(chapter) }
+                    .padding(
+                        start = 18.dp,
+                        end = 8.dp,
+                        top = 12.dp,
+                        bottom = 12.dp
+                    ),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text("${chapter.index + 1}", style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(end = 14.dp))
-                Text(chapter.title, modifier = Modifier.weight(1f), maxLines = 2, overflow = TextOverflow.Ellipsis)
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = if (isCurrent) {
+                        MaterialTheme.colorScheme.primary
+                    } else {
+                        MaterialTheme.colorScheme.surfaceVariant
+                    }
+                ) {
+                    Box(
+                        Modifier.size(width = 54.dp, height = 42.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            number.toString(),
+                            fontWeight = FontWeight.Bold,
+                            color = if (isCurrent) {
+                                MaterialTheme.colorScheme.onPrimary
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            }
+                        )
+                    }
+                }
+
+                Column(
+                    Modifier.weight(1f).padding(horizontal = 12.dp)
+                ) {
+                    Text(
+                        cleanedChapterTitle(chapter.title),
+                        fontWeight = if (isCurrent) {
+                            FontWeight.Bold
+                        } else {
+                            FontWeight.Medium
+                        },
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+
+                    if (isDownloaded) {
+                        Text(
+                            "Downloaded",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    } else if (isCurrent) {
+                        Text(
+                            "Current chapter",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                }
+
+                IconButton(
+                    onClick = { downloadStart = chapter }
+                ) {
+                    Icon(
+                        if (isDownloaded) {
+                            Icons.Rounded.CheckCircle
+                        } else {
+                            Icons.Rounded.CloudDownload
+                        },
+                        contentDescription = if (isDownloaded) {
+                            "Downloaded"
+                        } else {
+                            "Download from Chapter $number"
+                        },
+                        tint = if (isDownloaded) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        }
+                    )
+                }
             }
+
+            HorizontalDivider(
+                modifier = Modifier.padding(start = 84.dp)
+            )
         }
     }
 }

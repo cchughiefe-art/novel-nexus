@@ -5,10 +5,6 @@ import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
 import androidx.work.workDataOf
 import com.novelnexus.app.NovelNexusApp
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
-import kotlinx.coroutines.coroutineScope
-import java.util.concurrent.atomic.AtomicInteger
 
 class NovelDownloadWorker(
     appContext: Context,
@@ -21,13 +17,19 @@ class NovelDownloadWorker(
         val title = inputData.getString("title") ?: "Novel"
         val cover = inputData.getString("coverUrl")
         val author = inputData.getString("author")
-        val from = inputData.getInt("from", 0)
-        val to = inputData.getInt("to", Int.MAX_VALUE)
+
+        // v0.5.0 anchored downloads.
+        val startUrl = inputData.getString("startUrl")
+        val startIndex = inputData.getInt("startIndex", Int.MIN_VALUE)
+        val limit = inputData.getInt("limit", -1)
+
+        // Backward compatibility with older queued jobs.
+        val legacyFrom = inputData.getInt("from", Int.MIN_VALUE)
+        val legacyTo = inputData.getInt("to", Int.MAX_VALUE)
 
         val graph = (applicationContext as NovelNexusApp).graph
         val repo = graph.repository
 
-        // Make the queued novel visible immediately.
         repo.db().upsertNovel(sourceId, novelUrl, title, cover, author)
 
         setProgress(
@@ -40,89 +42,134 @@ class NovelDownloadWorker(
             )
         )
 
-        val chapters = runCatching {
-            repo.chapters(sourceId, novelUrl)
-        }.getOrElse { error ->
-            return if (runAttemptCount < 2) {
-                Result.retry()
-            } else {
-                Result.failure(
-                    workDataOf("error" to (error.message ?: "Could not load chapters"))
-                )
+        val loaded = runCatching { repo.chapters(sourceId, novelUrl) }
+            .getOrElse { error ->
+                return if (runAttemptCount < 2) {
+                    Result.retry()
+                } else {
+                    Result.failure(
+                        workDataOf("error" to (error.message ?: "Could not load chapters"))
+                    )
+                }
             }
+
+        val chapters = loaded
+            .distinctBy { it.url }
+            .sortedWith(compareBy({ it.index }, { it.url }))
+
+        if (chapters.isEmpty()) {
+            return Result.failure(workDataOf("error" to "This novel has no chapters"))
         }
 
-        val selected = chapters.filter { it.index in from..to }
+        val selected = if (startUrl != null || startIndex != Int.MIN_VALUE) {
+            val byUrl = if (!startUrl.isNullOrBlank()) {
+                chapters.indexOfFirst { it.url == startUrl }
+            } else {
+                -1
+            }
+
+            val startPosition = if (byUrl >= 0) {
+                byUrl
+            } else {
+                chapters.indexOfFirst { it.index >= startIndex }
+            }
+
+            if (startPosition < 0) {
+                return Result.failure(
+                    workDataOf("error" to "The selected starting chapter is no longer available")
+                )
+            }
+
+            val remaining = chapters.drop(startPosition)
+            if (limit > 0) remaining.take(limit) else remaining
+        } else {
+            chapters.filter { it.index in legacyFrom..legacyTo }
+        }
+
         if (selected.isEmpty()) {
             return Result.failure(
-                workDataOf("error" to "No chapters were found for this novel")
+                workDataOf("error" to "No chapters matched this download")
             )
         }
 
-        val total = selected.size
-        val done = AtomicInteger(
-            selected.count { repo.db().isDownloaded(sourceId, it.url) }
+        val firstPosition = chapters.indexOfFirst { it.url == selected.first().url }
+        val lastPosition = chapters.indexOfFirst { it.url == selected.last().url }
+        val fromNumber = firstPosition + 1
+        val toNumber = lastPosition + 1
+
+        val existing = repo.db().downloadedUrls(sourceId, novelUrl)
+        var done = selected.count { it.url in existing }
+        var failed = 0
+        var lastError: String? = null
+
+        fun progress(
+            stage: String,
+            currentNumber: Int = fromNumber,
+            currentTitle: String = ""
+        ) = workDataOf(
+            "title" to title,
+            "stage" to stage,
+            "done" to done,
+            "total" to selected.size,
+            "failed" to failed,
+            "rangeFrom" to fromNumber,
+            "rangeTo" to toNumber,
+            "currentChapterNumber" to currentNumber,
+            "currentChapterTitle" to currentTitle
         )
-        val failures = AtomicInteger(0)
 
-        setProgress(
-            workDataOf(
-                "title" to title,
-                "stage" to "downloading",
-                "done" to done.get(),
-                "total" to total,
-                "failed" to 0
-            )
-        )
+        setProgress(progress("downloading"))
 
-        // Important: do not launch thousands of coroutines at once.
-        // Process in bounded groups of four.
-        for (batch in selected.chunked(4)) {
-            coroutineScope {
-                batch.map { ref ->
-                    async {
-                        if (repo.db().isDownloaded(sourceId, ref.url)) return@async
-
-                        runCatching {
-                            repo.downloadChapter(ref)
-                        }.onSuccess {
-                            done.incrementAndGet()
-                        }.onFailure {
-                            failures.incrementAndGet()
-                        }
-                    }
-                }.awaitAll()
+        // Strictly sequential: N, N+1, N+2...
+        // This prevents "Chapter 100 then Chapter 27" behavior.
+        selected.forEachIndexed { offset, ref ->
+            if (isStopped) {
+                return Result.failure(workDataOf("error" to "Download cancelled"))
             }
 
-            setProgress(
-                workDataOf(
-                    "title" to title,
-                    "stage" to "downloading",
-                    "done" to done.get(),
-                    "total" to total,
-                    "failed" to failures.get()
-                )
-            )
+            val currentNumber = fromNumber + offset
+
+            if (repo.db().isDownloaded(sourceId, ref.url)) {
+                setProgress(progress("downloading", currentNumber, ref.title))
+                return@forEachIndexed
+            }
+
+            setProgress(progress("downloading", currentNumber, ref.title))
+
+            runCatching { repo.downloadChapter(ref) }
+                .onSuccess { done += 1 }
+                .onFailure {
+                    failed += 1
+                    lastError = it.message
+                }
+
+            setProgress(progress("downloading", currentNumber, ref.title))
         }
 
-        val failed = failures.get()
-        return if (failed == 0) {
-            Result.success(
+        return when {
+            failed == 0 -> Result.success(
                 workDataOf(
-                    "done" to done.get(),
-                    "total" to total,
-                    "failed" to 0
+                    "title" to title,
+                    "done" to done,
+                    "total" to selected.size,
+                    "failed" to 0,
+                    "rangeFrom" to fromNumber,
+                    "rangeTo" to toNumber
                 )
             )
-        } else if (runAttemptCount < 2) {
-            Result.retry()
-        } else {
-            Result.failure(
+            runAttemptCount < 2 -> Result.retry()
+            else -> Result.failure(
                 workDataOf(
-                    "error" to "$failed chapters failed",
-                    "done" to done.get(),
-                    "total" to total,
-                    "failed" to failed
+                    "title" to title,
+                    "error" to (
+                        lastError?.let { "$failed chapter(s) failed: $it" }
+                            ?: "$failed chapter(s) failed"
+                    ),
+                    "done" to done,
+                    "total" to selected.size,
+                    "failed" to failed,
+                    "rangeFrom" to fromNumber,
+                    "rangeTo" to toNumber
                 )
             )
         }

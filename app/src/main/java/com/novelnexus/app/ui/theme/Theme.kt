@@ -13,33 +13,37 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
 
 private val DarkColors = darkColorScheme(
-    primary = Color(0xFFE75A3C),
-    onPrimary = Color.White,
-    primaryContainer = Color(0xFF4D2118),
-    onPrimaryContainer = Color(0xFFFFDBD2),
-    secondary = Color(0xFFD8B98E),
-    background = Color(0xFF0F0F10),
-    surface = Color(0xFF171719),
-    surfaceVariant = Color(0xFF242426),
-    onBackground = Color(0xFFF7F4EF),
-    onSurface = Color(0xFFF7F4EF),
-    onSurfaceVariant = Color(0xFFBFB9B0),
-    outline = Color(0xFF595553)
+    primary = Color(0xFF9AB6FF),
+    onPrimary = Color(0xFF06205B),
+    primaryContainer = Color(0xFF173A7A),
+    onPrimaryContainer = Color(0xFFDCE5FF),
+    secondary = Color(0xFFC0C8E8),
+    tertiary = Color(0xFFF0B4FF),
+    background = Color(0xFF090B10),
+    surface = Color(0xFF11141A),
+    surfaceVariant = Color(0xFF1B2029),
+    onBackground = Color(0xFFF4F6FC),
+    onSurface = Color(0xFFF4F6FC),
+    onSurfaceVariant = Color(0xFFB7BFCC),
+    outline = Color(0xFF566071),
+    errorContainer = Color(0xFF5A1F26)
 )
 
 private val LightColors = lightColorScheme(
-    primary = Color(0xFFC93D25),
+    primary = Color(0xFF3159C7),
     onPrimary = Color.White,
-    primaryContainer = Color(0xFFFFDAD0),
-    onPrimaryContainer = Color(0xFF3C0A02),
-    secondary = Color(0xFF725B3F),
-    background = Color(0xFFFFFBF7),
-    surface = Color(0xFFFFFFFF),
-    surfaceVariant = Color(0xFFF4EFE9),
-    onBackground = Color(0xFF211A17),
-    onSurface = Color(0xFF211A17),
-    onSurfaceVariant = Color(0xFF6E625B),
-    outline = Color(0xFF9C8E86)
+    primaryContainer = Color(0xFFDCE5FF),
+    onPrimaryContainer = Color(0xFF0B2C68),
+    secondary = Color(0xFF5B6480),
+    tertiary = Color(0xFF7D4E85),
+    background = Color(0xFFF7F8FC),
+    surface = Color.White,
+    surfaceVariant = Color(0xFFEDF0F6),
+    onBackground = Color(0xFF171A21),
+    onSurface = Color(0xFF171A21),
+    onSurfaceVariant = Color(0xFF626A77),
+    outline = Color(0xFF9199A7),
+    errorContainer = Color(0xFFFFDAD6)
 )
 
 private val AppTypography = Typography(
@@ -47,28 +51,30 @@ private val AppTypography = Typography(
         fontFamily = FontFamily.SansSerif,
         fontWeight = FontWeight.Black,
         fontSize = 32.sp,
-        lineHeight = 36.sp
+        lineHeight = 37.sp
     ),
     headlineMedium = TextStyle(
         fontFamily = FontFamily.SansSerif,
         fontWeight = FontWeight.Bold,
         fontSize = 26.sp,
-        lineHeight = 30.sp
+        lineHeight = 31.sp
     ),
     titleLarge = TextStyle(
         fontFamily = FontFamily.SansSerif,
         fontWeight = FontWeight.Bold,
-        fontSize = 20.sp
+        fontSize = 20.sp,
+        lineHeight = 25.sp
     ),
     titleMedium = TextStyle(
         fontFamily = FontFamily.SansSerif,
         fontWeight = FontWeight.SemiBold,
-        fontSize = 16.sp
+        fontSize = 16.sp,
+        lineHeight = 21.sp
     ),
     bodyLarge = TextStyle(
         fontFamily = FontFamily.SansSerif,
-        fontSize = 16.sp,
-        lineHeight = 24.sp
+        fontSize = 17.sp,
+        lineHeight = 26.sp
     ),
     bodyMedium = TextStyle(
         fontFamily = FontFamily.SansSerif,
@@ -85,7 +91,11 @@ private val AppTypography = Typography(
 @Composable
 fun NovelNexusTheme(content: @Composable () -> Unit) {
     MaterialTheme(
-        colorScheme = if (isSystemInDarkTheme()) DarkColors else LightColors,
+        colorScheme = if (isSystemInDarkTheme()) {
+            DarkColors
+        } else {
+            LightColors
+        },
         typography = AppTypography,
         content = content
     )
