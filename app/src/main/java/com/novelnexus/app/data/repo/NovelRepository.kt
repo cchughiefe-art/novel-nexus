@@ -63,16 +63,30 @@ class NovelRepository(
     suspend fun novel(sourceId: String, url: String): NovelDetails {
         val key=cacheKey(sourceId,url)
         detailsCache[key].fresh(300_000L)?.let { return it }
-        return runCatching { sources.require(sourceId).novel(url) }.fold(
+
+        db.offlineNovelDetails(sourceId,url)?.let { offline ->
+            detailsCache[key]=Timed(offline)
+            if(offline.chapters.isNotEmpty()) {
+                chaptersCache[key]=Timed(offline.chapters)
+            }
+            return offline
+        }
+
+        return runCatching {
+            sources.require(sourceId).novel(url)
+        }.fold(
             onSuccess = { details ->
                 detailsCache[key]=Timed(details)
                 if (details.chapters.isNotEmpty()) {
                     chaptersCache[key]=Timed(details.chapters)
                     db.saveChapterCatalog(sourceId,url,details.chapters)
                 }
-                trim(); details
+                trim()
+                details
             },
-            onFailure = { failure -> db.offlineNovelDetails(sourceId,url) ?: throw failure }
+            onFailure = { failure ->
+                db.offlineNovelDetails(sourceId,url) ?: throw failure
+            }
         )
     }
 
@@ -92,15 +106,31 @@ class NovelRepository(
     suspend fun chapters(sourceId: String, url: String): List<ChapterRef> {
         val key=cacheKey(sourceId,url)
         chaptersCache[key].fresh(600_000L)?.let { return it }
-        return runCatching { sources.require(sourceId).chapters(url) }.fold(
+
+        val local = db.cachedChapterCatalog(sourceId,url)
+            .takeIf { it.isNotEmpty() }
+            ?: db.downloadedChapters(sourceId,url).takeIf { it.isNotEmpty() }
+
+        if(local != null) {
+            chaptersCache[key]=Timed(local)
+            return local
+        }
+
+        return runCatching {
+            sources.require(sourceId).chapters(url)
+        }.fold(
             onSuccess = { list ->
                 chaptersCache[key]=Timed(list)
-                if (list.isNotEmpty()) db.saveChapterCatalog(sourceId,url,list)
-                trim(); list
+                if (list.isNotEmpty()) {
+                    db.saveChapterCatalog(sourceId,url,list)
+                }
+                trim()
+                list
             },
             onFailure = { failure ->
                 db.cachedChapterCatalog(sourceId,url).takeIf { it.isNotEmpty() }
-                    ?: db.downloadedChapters(sourceId,url).takeIf { it.isNotEmpty() }
+                    ?: db.downloadedChapters(sourceId,url)
+                        .takeIf { it.isNotEmpty() }
                     ?: throw failure
             }
         )
@@ -120,9 +150,21 @@ class NovelRepository(
 
     suspend fun chapterLoad(ref: ChapterRef): ChapterLoad {
         db.getChapter(ref.sourceId,ref.url)?.let { local ->
-            if (db.verifyDownloadedChapter(ref.sourceId,ref.url)) return ChapterLoad(local,"Downloaded")
+            val verified = runCatching {
+                db.verifyDownloadedChapter(ref.sourceId,ref.url)
+            }.getOrDefault(false)
+
+            return ChapterLoad(
+                local,
+                if(verified) "Downloaded · Offline ready"
+                else "Downloaded · Offline copy"
+            )
         }
-        return ChapterLoad(sources.require(ref.sourceId).chapter(ref),"Network / cache")
+
+        return ChapterLoad(
+            sources.require(ref.sourceId).chapter(ref),
+            "Network / cache"
+        )
     }
 
     suspend fun checkDownloadedChapterEdit(ref: ChapterRef): ChapterEditCheck {

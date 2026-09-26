@@ -336,7 +336,12 @@ fun NovelDetailScreen(
 
     LaunchedEffect(sourceId, url) {
         loading = true
-        novel = runCatching {
+
+        val offline = withContext(Dispatchers.IO) {
+            graph.repository.db().offlineNovelDetails(sourceId, url)
+        }
+
+        novel = offline ?: runCatching {
             graph.repository.novel(sourceId, url)
         }.getOrNull()
 
@@ -345,9 +350,13 @@ fun NovelDetailScreen(
         }
 
         loadDownloaded()
-
-        if (novel == null) refresh()
         loading = false
+
+        if(offline != null) {
+            scope.launch { refresh() }
+        } else if(novel == null) {
+            refresh()
+        }
     }
 
     if (loading && novel == null) {

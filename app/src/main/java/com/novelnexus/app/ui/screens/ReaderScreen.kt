@@ -7,6 +7,8 @@ import android.content.pm.ActivityInfo
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.gestures.animateScrollBy
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -14,11 +16,13 @@ import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
@@ -43,6 +47,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -52,6 +57,7 @@ import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -125,12 +131,14 @@ private fun palette(name: String): ReaderPalette = when (name) {
 }
 
 private fun enqueueRange(context: Context, ref: ChapterRef, from: Int, to: Int) {
+    val count = (to - from + 1).coerceAtLeast(1)
     val input = Data.Builder()
         .putString("sourceId", ref.sourceId)
         .putString("novelUrl", ref.novelUrl)
         .putString("title", "Reader download")
-        .putInt("from", from)
-        .putInt("to", to)
+        .putString("startUrl", ref.url)
+        .putInt("startIndex", ref.index)
+        .putInt("limit", count)
         .build()
     val request = OneTimeWorkRequestBuilder<NovelDownloadWorker>()
         .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
@@ -230,10 +238,30 @@ fun ReaderScreen(
     LaunchedEffect(content?.chapterUrl, paragraphs.size, prefs.mode) {
         val loaded=content ?: return@LaunchedEffect
         if (paragraphs.isEmpty()) return@LaunchedEffect
-        val saved=withContext(Dispatchers.IO) { graph.repository.db().getReadingProgress(sourceId,novelUrl) }
+
+        // List/pager state survives route argument changes. Reset first so a
+        // newly opened chapter cannot inherit the previous chapter's end.
+        if(prefs.mode=="PAGED") {
+            pagerState.scrollToPage(0)
+        } else {
+            listState.scrollToItem(0,0)
+        }
+
+        // Restore only if saved progress belongs to this exact chapter.
+        val saved=withContext(Dispatchers.IO) {
+            graph.repository.db().getReadingProgress(sourceId,novelUrl)
+        }
         if(saved?.chapterUrl==loaded.chapterUrl) {
-            if(prefs.mode=="PAGED") pagerState.scrollToPage((saved.paragraphIndex/4).coerceIn(0,pages.lastIndex))
-            else listState.scrollToItem((saved.paragraphIndex+1).coerceAtMost(paragraphs.size),saved.scrollOffset)
+            if(prefs.mode=="PAGED") {
+                pagerState.scrollToPage(
+                    (saved.paragraphIndex/4).coerceIn(0,pages.lastIndex)
+                )
+            } else {
+                listState.scrollToItem(
+                    (saved.paragraphIndex+1).coerceAtMost(paragraphs.size),
+                    saved.scrollOffset
+                )
+            }
         }
     }
 
@@ -480,42 +508,407 @@ fun ReaderScreen(
     }
 
     if(showSettings) {
+        var useBookSettings by remember(novelUrl,showSettings) {
+            mutableStateOf(graph.readerPreferences.hasBookOverride(novelUrl))
+        }
+
         ModalBottomSheet(onDismissRequest={showSettings=false}) {
-            Column(Modifier.fillMaxWidth().padding(horizontal=20.dp,vertical=8.dp)) {
-                Text("Reader settings",style=MaterialTheme.typography.headlineMedium)
-                Text("Theme",style=MaterialTheme.typography.titleMedium,modifier=Modifier.padding(top=14.dp))
-                Row(horizontalArrangement=Arrangement.spacedBy(6.dp)) {
-                    listOf("AMOLED","DARK","SEPIA","PAPER","WHITE").forEach { name ->
-                        TextButton(onClick={scope.launch { graph.readerPreferences.updateForBook(novelUrl) { it.copy(theme=name) } }}) { Text(name) }
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState())
+                    .navigationBarsPadding()
+                    .padding(horizontal=18.dp,vertical=8.dp)
+            ) {
+                Row(
+                    Modifier.fillMaxWidth(),
+                    verticalAlignment=Alignment.CenterVertically
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            "Reader settings",
+                            style=MaterialTheme.typography.headlineMedium
+                        )
+                        Text(
+                            "Comfort, navigation and accessibility.",
+                            color=MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    TextButton(onClick={showSettings=false}) { Text("Done") }
+                }
+
+                SettingSection("Profile") {
+                    SettingSwitch(
+                        "Custom settings for this book",
+                        useBookSettings
+                    ) { enabled ->
+                        useBookSettings=enabled
+                        scope.launch {
+                            graph.readerPreferences.setBookOverride(
+                                novelUrl,
+                                enabled
+                            )
+                        }
+                    }
+                    Text(
+                        if(useBookSettings)
+                            "Changes below apply only to this novel."
+                        else
+                            "Changes below are your global reader defaults.",
+                        style=MaterialTheme.typography.bodyMedium,
+                        color=MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+
+                SettingSection("Appearance") {
+                    Text("Theme",fontWeight=FontWeight.SemiBold)
+                    Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
+                        ReaderChoice("AMOLED",prefs.theme=="AMOLED") {
+                            scope.launch {
+                                graph.readerPreferences.updateForBook(novelUrl) {
+                                    it.copy(theme="AMOLED")
+                                }
+                            }
+                        }
+                        ReaderChoice("DARK",prefs.theme=="DARK") {
+                            scope.launch {
+                                graph.readerPreferences.updateForBook(novelUrl) {
+                                    it.copy(theme="DARK")
+                                }
+                            }
+                        }
+                        ReaderChoice("SEPIA",prefs.theme=="SEPIA") {
+                            scope.launch {
+                                graph.readerPreferences.updateForBook(novelUrl) {
+                                    it.copy(theme="SEPIA")
+                                }
+                            }
+                        }
+                    }
+                    Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
+                        ReaderChoice("PAPER",prefs.theme=="PAPER") {
+                            scope.launch {
+                                graph.readerPreferences.updateForBook(novelUrl) {
+                                    it.copy(theme="PAPER")
+                                }
+                            }
+                        }
+                        ReaderChoice("WHITE",prefs.theme=="WHITE") {
+                            scope.launch {
+                                graph.readerPreferences.updateForBook(novelUrl) {
+                                    it.copy(theme="WHITE")
+                                }
+                            }
+                        }
+                    }
+
+                    Text(
+                        "Reading mode",
+                        fontWeight=FontWeight.SemiBold,
+                        modifier=Modifier.padding(top=4.dp)
+                    )
+                    Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
+                        ReaderChoice("Scroll",prefs.mode=="SCROLL") {
+                            scope.launch {
+                                graph.readerPreferences.updateForBook(novelUrl) {
+                                    it.copy(mode="SCROLL")
+                                }
+                            }
+                        }
+                        ReaderChoice("Paged",prefs.mode=="PAGED") {
+                            scope.launch {
+                                graph.readerPreferences.updateForBook(novelUrl) {
+                                    it.copy(mode="PAGED")
+                                }
+                            }
+                        }
+                    }
+
+                    SettingSlider(
+                        "Font size",
+                        "${prefs.fontSize.roundToInt()}sp",
+                        prefs.fontSize,
+                        14f..30f
+                    ) { v ->
+                        scope.launch {
+                            graph.readerPreferences.updateForBook(novelUrl) {
+                                it.copy(fontSize=v)
+                            }
+                        }
+                    }
+                    SettingSlider(
+                        "Line height",
+                        "%.2f".format(prefs.lineHeight),
+                        prefs.lineHeight,
+                        1.2f..2.2f
+                    ) { v ->
+                        scope.launch {
+                            graph.readerPreferences.updateForBook(novelUrl) {
+                                it.copy(lineHeight=v)
+                            }
+                        }
+                    }
+                    SettingSlider(
+                        "Paragraph spacing",
+                        "${prefs.paragraphSpacing.roundToInt()}dp",
+                        prefs.paragraphSpacing,
+                        2f..20f
+                    ) { v ->
+                        scope.launch {
+                            graph.readerPreferences.updateForBook(novelUrl) {
+                                it.copy(paragraphSpacing=v)
+                            }
+                        }
+                    }
+                    SettingSlider(
+                        "Side margins",
+                        "${prefs.margin.roundToInt()}dp",
+                        prefs.margin,
+                        10f..42f
+                    ) { v ->
+                        scope.launch {
+                            graph.readerPreferences.updateForBook(novelUrl) {
+                                it.copy(margin=v)
+                            }
+                        }
+                    }
+
+                    SettingSwitch(
+                        "Follow system brightness",
+                        prefs.brightness<0f
+                    ) { system ->
+                        scope.launch {
+                            graph.readerPreferences.updateForBook(novelUrl) {
+                                it.copy(
+                                    brightness=if(system) -1f else 0.5f
+                                )
+                            }
+                        }
+                    }
+                    if(prefs.brightness>=0f) {
+                        SettingSlider(
+                            "Reader brightness",
+                            "${(prefs.brightness*100).roundToInt()}%",
+                            prefs.brightness,
+                            0.05f..1f
+                        ) { v ->
+                            scope.launch {
+                                graph.readerPreferences.updateForBook(novelUrl) {
+                                    it.copy(brightness=v)
+                                }
+                            }
+                        }
                     }
                 }
-                Text("Reading mode",style=MaterialTheme.typography.titleMedium)
-                Row { listOf("SCROLL","PAGED").forEach { m -> TextButton(onClick={scope.launch { graph.readerPreferences.updateForBook(novelUrl) { it.copy(mode=m) } }}) { Text(m) } } }
-                Text("Font size ${prefs.fontSize.roundToInt()}")
-                Slider(value=prefs.fontSize,onValueChange={v->scope.launch { graph.readerPreferences.updateForBook(novelUrl) { it.copy(fontSize=v) } }},valueRange=14f..30f)
-                Text("Line height ${"%.2f".format(prefs.lineHeight)}")
-                Slider(value=prefs.lineHeight,onValueChange={v->scope.launch { graph.readerPreferences.updateForBook(novelUrl) { it.copy(lineHeight=v) } }},valueRange=1.2f..2.2f)
-                Text("Paragraph spacing ${prefs.paragraphSpacing.roundToInt()}dp")
-                Slider(value=prefs.paragraphSpacing,onValueChange={v->scope.launch { graph.readerPreferences.updateForBook(novelUrl) { it.copy(paragraphSpacing=v) } }},valueRange=2f..20f)
-                Text("Side margins ${prefs.margin.roundToInt()}dp")
-                Slider(value=prefs.margin,onValueChange={v->scope.launch { graph.readerPreferences.updateForBook(novelUrl) { it.copy(margin=v) } }},valueRange=10f..42f)
-                Text("Brightness ${if(prefs.brightness<0f) "System" else "${(prefs.brightness*100).roundToInt()}%"}")
-                Slider(value=if(prefs.brightness<0f) 0.5f else prefs.brightness,onValueChange={v->scope.launch { graph.readerPreferences.updateForBook(novelUrl) { it.copy(brightness=v) } }},valueRange=0.05f..1f)
-                TextButton(onClick={scope.launch { graph.readerPreferences.updateForBook(novelUrl) { it.copy(brightness=-1f) } }}) { Text("Use system brightness") }
-                SettingSwitch("Immersive fullscreen",prefs.immersive) { scope.launch { graph.readerPreferences.updateForBook(novelUrl) { p->p.copy(immersive=it) } } }
-                SettingSwitch("Keep screen awake",prefs.keepAwake) { scope.launch { graph.readerPreferences.updateForBook(novelUrl) { p->p.copy(keepAwake=it) } } }
-                SettingSwitch("Volume buttons scroll/page",prefs.volumeNavigation) { scope.launch { graph.readerPreferences.updateForBook(novelUrl) { p->p.copy(volumeNavigation=it) } } }
-                SettingSwitch("Auto-scroll",prefs.autoScroll) { scope.launch { graph.readerPreferences.updateForBook(novelUrl) { p->p.copy(autoScroll=it) } } }
-                if(prefs.autoScroll){ Text("Auto-scroll speed ${prefs.autoScrollSpeed.roundToInt()}"); Slider(value=prefs.autoScrollSpeed,onValueChange={v->scope.launch{graph.readerPreferences.updateForBook(novelUrl){it.copy(autoScrollSpeed=v)}}},valueRange=10f..180f) }
-                SettingSwitch("Automatic next chapter",prefs.autoNext) { scope.launch { graph.readerPreferences.updateForBook(novelUrl) { p->p.copy(autoNext=it) } } }
-                if(prefs.autoNext){ Text("Countdown ${prefs.autoNextSeconds}s"); Slider(value=prefs.autoNextSeconds.toFloat(),onValueChange={v->scope.launch{graph.readerPreferences.updateForBook(novelUrl){it.copy(autoNextSeconds=v.roundToInt().coerceIn(2,15))}}},valueRange=2f..15f,steps=12) }
-                SettingSwitch("Continuous chapter mode",prefs.continuousMode) { scope.launch { graph.readerPreferences.updateForBook(novelUrl) { p->p.copy(continuousMode=it) } } }
-                SettingSwitch("Reduced motion",prefs.reducedMotion) { scope.launch { graph.readerPreferences.updateForBook(novelUrl) { p->p.copy(reducedMotion=it) } } }
-                SettingSwitch("High contrast",prefs.highContrast) { scope.launch { graph.readerPreferences.updateForBook(novelUrl) { p->p.copy(highContrast=it) } } }
-                SettingSwitch("Large reader controls",prefs.largeControls) { scope.launch { graph.readerPreferences.updateForBook(novelUrl) { p->p.copy(largeControls=it) } } }
-                SettingSwitch("Swipe left/right changes chapter",prefs.swipeChapter) { scope.launch { graph.readerPreferences.updateForBook(novelUrl) { p->p.copy(swipeChapter=it) } } }
-                Text("Orientation",style=MaterialTheme.typography.titleMedium,modifier=Modifier.padding(top=8.dp))
-                Row { listOf("AUTO","PORTRAIT","LANDSCAPE").forEach { o -> TextButton(onClick={scope.launch { graph.readerPreferences.updateForBook(novelUrl) { it.copy(orientation=o) } }}) { Text(o) } } }
+
+                SettingSection("Reading flow") {
+                    SettingSwitch(
+                        "Volume buttons scroll/page",
+                        prefs.volumeNavigation
+                    ) {
+                        scope.launch {
+                            graph.readerPreferences.updateForBook(novelUrl) { p ->
+                                p.copy(volumeNavigation=it)
+                            }
+                        }
+                    }
+                    SettingSwitch("Auto-scroll",prefs.autoScroll) {
+                        scope.launch {
+                            graph.readerPreferences.updateForBook(novelUrl) { p ->
+                                p.copy(autoScroll=it)
+                            }
+                        }
+                    }
+                    if(prefs.autoScroll) {
+                        SettingSlider(
+                            "Auto-scroll speed",
+                            prefs.autoScrollSpeed.roundToInt().toString(),
+                            prefs.autoScrollSpeed,
+                            10f..180f
+                        ) { v ->
+                            scope.launch {
+                                graph.readerPreferences.updateForBook(novelUrl) {
+                                    it.copy(autoScrollSpeed=v)
+                                }
+                            }
+                        }
+                    }
+                    SettingSwitch(
+                        "Automatic next chapter",
+                        prefs.autoNext
+                    ) {
+                        scope.launch {
+                            graph.readerPreferences.updateForBook(novelUrl) { p ->
+                                p.copy(autoNext=it)
+                            }
+                        }
+                    }
+                    if(prefs.autoNext) {
+                        SettingSlider(
+                            "Next chapter countdown",
+                            "${prefs.autoNextSeconds}s",
+                            prefs.autoNextSeconds.toFloat(),
+                            2f..15f,
+                            12
+                        ) { v ->
+                            scope.launch {
+                                graph.readerPreferences.updateForBook(novelUrl) {
+                                    it.copy(
+                                        autoNextSeconds=
+                                            v.roundToInt().coerceIn(2,15)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                    SettingSwitch(
+                        "Continuous chapter mode",
+                        prefs.continuousMode
+                    ) {
+                        scope.launch {
+                            graph.readerPreferences.updateForBook(novelUrl) { p ->
+                                p.copy(continuousMode=it)
+                            }
+                        }
+                    }
+                }
+
+                SettingSection("Screen") {
+                    SettingSwitch(
+                        "Immersive fullscreen",
+                        prefs.immersive
+                    ) {
+                        scope.launch {
+                            graph.readerPreferences.updateForBook(novelUrl) { p ->
+                                p.copy(immersive=it)
+                            }
+                        }
+                    }
+                    SettingSwitch(
+                        "Keep screen awake",
+                        prefs.keepAwake
+                    ) {
+                        scope.launch {
+                            graph.readerPreferences.updateForBook(novelUrl) { p ->
+                                p.copy(keepAwake=it)
+                            }
+                        }
+                    }
+
+                    Text("Orientation",fontWeight=FontWeight.SemiBold)
+                    Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
+                        listOf("AUTO","PORTRAIT","LANDSCAPE").forEach { o ->
+                            ReaderChoice(
+                                o.lowercase().replaceFirstChar { it.uppercase() },
+                                prefs.orientation==o
+                            ) {
+                                scope.launch {
+                                    graph.readerPreferences.updateForBook(
+                                        novelUrl
+                                    ) {
+                                        it.copy(orientation=o)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                SettingSection("Gestures") {
+                    SettingSwitch(
+                        "Swipe left/right changes chapter",
+                        prefs.swipeChapter
+                    ) {
+                        scope.launch {
+                            graph.readerPreferences.updateForBook(novelUrl) { p ->
+                                p.copy(swipeChapter=it)
+                            }
+                        }
+                    }
+
+                    Text("Left-side tap",fontWeight=FontWeight.SemiBold)
+                    Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
+                        ReaderChoice("Page",prefs.tapLeftAction=="PAGE") {
+                            scope.launch {
+                                graph.readerPreferences.updateForBook(novelUrl) {
+                                    it.copy(tapLeftAction="PAGE")
+                                }
+                            }
+                        }
+                        ReaderChoice(
+                            "Chapter",
+                            prefs.tapLeftAction=="CHAPTER"
+                        ) {
+                            scope.launch {
+                                graph.readerPreferences.updateForBook(novelUrl) {
+                                    it.copy(tapLeftAction="CHAPTER")
+                                }
+                            }
+                        }
+                    }
+
+                    Text("Right-side tap",fontWeight=FontWeight.SemiBold)
+                    Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
+                        ReaderChoice("Page",prefs.tapRightAction=="PAGE") {
+                            scope.launch {
+                                graph.readerPreferences.updateForBook(novelUrl) {
+                                    it.copy(tapRightAction="PAGE")
+                                }
+                            }
+                        }
+                        ReaderChoice(
+                            "Chapter",
+                            prefs.tapRightAction=="CHAPTER"
+                        ) {
+                            scope.launch {
+                                graph.readerPreferences.updateForBook(novelUrl) {
+                                    it.copy(tapRightAction="CHAPTER")
+                                }
+                            }
+                        }
+                    }
+                }
+
+                SettingSection("Accessibility") {
+                    SettingSwitch("Reduced motion",prefs.reducedMotion) {
+                        scope.launch {
+                            graph.readerPreferences.updateForBook(novelUrl) { p ->
+                                p.copy(reducedMotion=it)
+                            }
+                        }
+                    }
+                    SettingSwitch("High contrast",prefs.highContrast) {
+                        scope.launch {
+                            graph.readerPreferences.updateForBook(novelUrl) { p ->
+                                p.copy(highContrast=it)
+                            }
+                        }
+                    }
+                    SettingSwitch(
+                        "Large reader controls",
+                        prefs.largeControls
+                    ) {
+                        scope.launch {
+                            graph.readerPreferences.updateForBook(novelUrl) { p ->
+                                p.copy(largeControls=it)
+                            }
+                        }
+                    }
+                }
+
+                TextButton(
+                    onClick={
+                        scope.launch {
+                            graph.readerPreferences.updateForBook(novelUrl) {
+                                ReaderPrefs()
+                            }
+                        }
+                    },
+                    modifier=Modifier.fillMaxWidth()
+                ) {
+                    Text("Reset reader settings")
+                }
+
                 Spacer(Modifier.height(24.dp))
             }
         }
@@ -550,8 +943,78 @@ fun ReaderScreen(
 }
 
 @Composable
-private fun SettingSwitch(label: String,checked: Boolean,onChange:(Boolean)->Unit) {
-    Row(Modifier.fillMaxWidth().padding(vertical=5.dp),verticalAlignment=Alignment.CenterVertically) {
+private fun SettingSection(
+    title: String,
+    content: @Composable ColumnScope.() -> Unit
+) {
+    Text(
+        title,
+        style=MaterialTheme.typography.titleMedium,
+        modifier=Modifier.padding(top=14.dp,bottom=7.dp)
+    )
+    Surface(
+        modifier=Modifier.fillMaxWidth(),
+        shape=RoundedCornerShape(20.dp),
+        color=MaterialTheme.colorScheme.surfaceVariant.copy(alpha=0.55f)
+    ) {
+        Column(
+            Modifier.padding(horizontal=14.dp,vertical=10.dp),
+            verticalArrangement=Arrangement.spacedBy(8.dp),
+            content=content
+        )
+    }
+}
+
+@Composable
+private fun ReaderChoice(
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit
+) {
+    FilterChip(
+        selected=selected,
+        onClick=onClick,
+        label={ Text(label) }
+    )
+}
+
+@Composable
+private fun SettingSlider(
+    label: String,
+    valueLabel: String,
+    value: Float,
+    range: ClosedFloatingPointRange<Float>,
+    steps: Int = 0,
+    onChange: (Float) -> Unit
+) {
+    Column {
+        Row(Modifier.fillMaxWidth()) {
+            Text(label,modifier=Modifier.weight(1f))
+            Text(
+                valueLabel,
+                color=MaterialTheme.colorScheme.primary,
+                fontWeight=FontWeight.SemiBold
+            )
+        }
+        Slider(
+            value=value,
+            onValueChange=onChange,
+            valueRange=range,
+            steps=steps
+        )
+    }
+}
+
+@Composable
+private fun SettingSwitch(
+    label: String,
+    checked: Boolean,
+    onChange: (Boolean) -> Unit
+) {
+    Row(
+        Modifier.fillMaxWidth().padding(vertical=2.dp),
+        verticalAlignment=Alignment.CenterVertically
+    ) {
         Text(label,modifier=Modifier.weight(1f))
         Switch(checked=checked,onCheckedChange=onChange)
     }
