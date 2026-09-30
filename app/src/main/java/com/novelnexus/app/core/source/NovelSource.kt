@@ -11,10 +11,12 @@ interface NovelSource {
     val baseUrl: String
     val supportsLatest: Boolean get() = true
     val supportsPopular: Boolean get() = false
+    val supportsGenres: Boolean get() = false
 
     suspend fun search(query: String, page: Int = 1): List<NovelCard>
     suspend fun latest(page: Int = 1): List<NovelCard> = emptyList()
     suspend fun popular(page: Int = 1): List<NovelCard> = emptyList()
+    suspend fun browseGenre(genre: String, page: Int = 1): List<NovelCard> = emptyList()
     suspend fun novel(url: String): NovelDetails
     suspend fun chapters(url: String): List<ChapterRef>
     suspend fun chapter(ref: ChapterRef): ChapterContent

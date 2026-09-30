@@ -489,11 +489,6 @@ fun NovelDetailScreen(
                         .padding(horizontal = 20.dp, vertical = 18.dp)
                 ) {
                     Text(
-                        graph.sources.get(sourceId)?.name ?: sourceId,
-                        style = MaterialTheme.typography.labelLarge,
-                        color = Color(0xFFBDD0FF)
-                    )
-                    Text(
                         item.title,
                         style = MaterialTheme.typography.headlineMedium,
                         color = Color.White,

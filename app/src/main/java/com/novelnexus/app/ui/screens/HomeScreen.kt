@@ -16,6 +16,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.AutoStories
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -36,6 +37,10 @@ import com.novelnexus.app.ui.components.HeroNovelCard
 import com.novelnexus.app.ui.components.NovelPosterCard
 import com.novelnexus.app.ui.components.NovelRowCard
 import com.novelnexus.app.ui.components.SectionTitle
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
+
+private val homeGenres = listOf("Action", "Adventure", "Fantasy", "Romance", "Mystery", "Sci-fi")
 
 @Composable
 fun HomeScreen(graph: AppGraph, onOpen: (NovelCard) -> Unit) {
@@ -43,13 +48,44 @@ fun HomeScreen(graph: AppGraph, onOpen: (NovelCard) -> Unit) {
     var sections by remember {
         mutableStateOf<List<NovelRepository.SourceResult<List<NovelCard>>>>(emptyList())
     }
+    var popularSections by remember {
+        mutableStateOf<List<NovelRepository.SourceResult<List<NovelCard>>>>(emptyList())
+    }
+    var selectedGenre by remember { mutableStateOf<String?>(null) }
+    var genreSections by remember {
+        mutableStateOf<List<NovelRepository.SourceResult<List<NovelCard>>>>(emptyList())
+    }
+    var genreLoading by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
-        sections = graph.repository.latest()
+        coroutineScope {
+            val latest = async { graph.repository.latest() }
+            val popular = async { graph.repository.popular() }
+            sections = latest.await()
+            popularSections = popular.await()
+        }
         loading = false
     }
 
+    LaunchedEffect(selectedGenre) {
+        val genre = selectedGenre
+        if (genre == null) {
+            genreSections = emptyList()
+            genreLoading = false
+        } else {
+            genreLoading = true
+            genreSections = graph.repository.browseGenre(genre)
+            genreLoading = false
+        }
+    }
+
     val allBooks = sections
+        .flatMap { it.data.orEmpty() }
+        .distinctBy { "${it.sourceId}:${it.url}" }
+    val popularBooks = popularSections
+        .flatMap { it.data.orEmpty() }
+        .distinctBy { "${it.sourceId}:${it.url}" }
+    val genreBooks = genreSections
         .flatMap { it.data.orEmpty() }
         .distinctBy { "${it.sourceId}:${it.url}" }
 
@@ -81,7 +117,7 @@ fun HomeScreen(graph: AppGraph, onOpen: (NovelCard) -> Unit) {
                 Spacer(Modifier.height(6.dp))
                 Text("Find your next world.", style = MaterialTheme.typography.headlineLarge)
                 Text(
-                    "Fresh chapters and full novels from your enabled sources.",
+                    "Find a story, pick a chapter, and keep reading offline.",
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
@@ -98,7 +134,7 @@ fun HomeScreen(graph: AppGraph, onOpen: (NovelCard) -> Unit) {
                     Text("Building your shelf…", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
-        } else if (allBooks.isEmpty()) {
+        } else if (allBooks.isEmpty() && popularBooks.isEmpty()) {
             item {
                 Text(
                     "No source returned books right now. Try Search or check Sources in Settings.",
@@ -108,32 +144,70 @@ fun HomeScreen(graph: AppGraph, onOpen: (NovelCard) -> Unit) {
             }
         } else {
             item {
-                val featured = allBooks.first()
+                val featured = popularBooks.firstOrNull() ?: allBooks.first()
                 HeroNovelCard(
                     item = featured,
-                    sourceName = graph.sources.get(featured.sourceId)?.name ?: featured.sourceId,
                     onClick = { onOpen(featured) },
                     modifier = Modifier.padding(horizontal = 18.dp)
                 )
             }
 
-            item {
-                SectionTitle(
-                    title = "Popular right now",
-                    subtitle = "A quick mix from every enabled source",
-                    modifier = Modifier.padding(horizontal = 18.dp)
-                )
-                Spacer(Modifier.height(12.dp))
-                LazyRow(
-                    contentPadding = PaddingValues(horizontal = 18.dp),
-                    horizontalArrangement = Arrangement.spacedBy(14.dp)
-                ) {
-                    items(allBooks.take(12), key = { "${it.sourceId}:${it.url}" }) { novel ->
-                        NovelPosterCard(
-                            item = novel,
-                            sourceName = graph.sources.get(novel.sourceId)?.name ?: novel.sourceId,
-                            onClick = { onOpen(novel) }
-                        )
+            if (popularBooks.isNotEmpty()) {
+                item {
+                    SectionTitle(
+                        title = "Popular right now",
+                        subtitle = "Books with the most chapters",
+                        modifier = Modifier.padding(horizontal = 18.dp)
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    LazyRow(
+                        contentPadding = PaddingValues(horizontal = 18.dp),
+                        horizontalArrangement = Arrangement.spacedBy(14.dp)
+                    ) {
+                        items(popularBooks.take(20), key = { "${it.sourceId}:${it.url}" }) { novel ->
+                            NovelPosterCard(item = novel, onClick = { onOpen(novel) })
+                        }
+                    }
+                }
+            }
+
+            if (graph.sources.enabled().any { it.supportsGenres }) {
+                item {
+                    SectionTitle(
+                        title = "Explore genres",
+                        modifier = Modifier.padding(horizontal = 18.dp)
+                    )
+                    LazyRow(
+                        contentPadding = PaddingValues(horizontal = 18.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        items(homeGenres) { genre ->
+                            FilterChip(
+                                selected = selectedGenre == genre,
+                                onClick = {
+                                    selectedGenre = if (selectedGenre == genre) null else genre
+                                },
+                                label = { Text(genre) }
+                            )
+                        }
+                    }
+                }
+                if (selectedGenre != null) {
+                    if (genreLoading) {
+                        item { CircularProgressIndicator(Modifier.padding(horizontal = 18.dp)) }
+                    } else if (genreBooks.isEmpty()) {
+                        item {
+                            Text(
+                                "No ${selectedGenre.orEmpty()} novels found right now.",
+                                modifier = Modifier.padding(horizontal = 18.dp),
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    } else {
+                        items(genreBooks, key = { "genre:${it.sourceId}:${it.url}" }) { novel ->
+                            NovelRowCard(item = novel, onClick = { onOpen(novel) },
+                                modifier = Modifier.padding(horizontal = 18.dp))
+                        }
                     }
                 }
             }
@@ -146,10 +220,9 @@ fun HomeScreen(graph: AppGraph, onOpen: (NovelCard) -> Unit) {
                 )
             }
 
-            items(allBooks.drop(1).take(20), key = { "${it.sourceId}:${it.url}" }) { novel ->
+            items(allBooks.take(20), key = { "latest:${it.sourceId}:${it.url}" }) { novel ->
                 NovelRowCard(
                     item = novel,
-                    sourceName = graph.sources.get(novel.sourceId)?.name ?: novel.sourceId,
                     onClick = { onOpen(novel) },
                     modifier = Modifier.padding(horizontal = 18.dp)
                 )

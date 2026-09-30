@@ -24,6 +24,7 @@ class NovelNexusProvider(context: Context) : NovelSource {
     override val name = "NovelFull app"
     override val baseUrl = "http://mapp4u.com:1337/"
     override val supportsPopular = true
+    override val supportsGenres = true
 
     private val gson = Gson()
     private val installationId: String = context.getSharedPreferences("novelfull_parse", Context.MODE_PRIVATE)
@@ -121,6 +122,7 @@ class NovelNexusProvider(context: Context) : NovelSource {
     override suspend fun search(query: String, page: Int) = searchNovels(query, page)
     override suspend fun latest(page: Int) = fetchTrending(page)
     override suspend fun popular(page: Int) = fetchTrending(page)
+    override suspend fun browseGenre(genre: String, page: Int) = fetchByGenre(genre, page)
     override suspend fun novel(url: String) = fetchNovelDetails(idFromUrl(url, "novels"))
 
     override suspend fun chapters(url: String): List<ChapterRef> {

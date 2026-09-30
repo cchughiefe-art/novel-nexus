@@ -21,6 +21,7 @@ data class ReaderPrefs(
     val theme: String = "AMOLED",
     val mode: String = "SCROLL",
     val fontSize: Float = 19f,
+    val fontFamily: String = "SERIF",
     val lineHeight: Float = 1.70f,
     val paragraphSpacing: Float = 9f,
     val margin: Float = 22f,
@@ -47,6 +48,7 @@ class ReaderPreferences(private val context: Context) {
         val THEME = stringPreferencesKey("theme")
         val MODE = stringPreferencesKey("mode")
         val FONT = floatPreferencesKey("font")
+        val FONT_FAMILY = stringPreferencesKey("font_family")
         val LINE = floatPreferencesKey("line")
         val PARAGRAPH = floatPreferencesKey("paragraph")
         val MARGIN = floatPreferencesKey("margin")
@@ -76,6 +78,7 @@ class ReaderPreferences(private val context: Context) {
             theme = p[Keys.THEME] ?: "AMOLED",
             mode = p[Keys.MODE] ?: "SCROLL",
             fontSize = p[Keys.FONT] ?: 19f,
+            fontFamily = p[Keys.FONT_FAMILY] ?: "SERIF",
             lineHeight = p[Keys.LINE] ?: 1.70f,
             paragraphSpacing = p[Keys.PARAGRAPH] ?: 9f,
             margin = p[Keys.MARGIN] ?: 22f,
@@ -136,6 +139,7 @@ class ReaderPreferences(private val context: Context) {
             p[Keys.THEME] = next.theme
             p[Keys.MODE] = next.mode
             p[Keys.FONT] = next.fontSize
+            p[Keys.FONT_FAMILY] = next.fontFamily
             p[Keys.LINE] = next.lineHeight
             p[Keys.PARAGRAPH] = next.paragraphSpacing
             p[Keys.MARGIN] = next.margin
@@ -175,6 +179,7 @@ class ReaderPreferences(private val context: Context) {
             theme = bookStore.getString("${id}_theme", "AMOLED") ?: "AMOLED",
             mode = bookStore.getString("${id}_mode", "SCROLL") ?: "SCROLL",
             fontSize = bookStore.getFloat("${id}_fontSize", 19f),
+            fontFamily = bookStore.getString("${id}_fontFamily", "SERIF") ?: "SERIF",
             lineHeight = bookStore.getFloat("${id}_lineHeight", 1.70f),
             paragraphSpacing = bookStore.getFloat("${id}_paragraphSpacing", 9f),
             margin = bookStore.getFloat("${id}_margin", 22f),
@@ -202,6 +207,7 @@ class ReaderPreferences(private val context: Context) {
             .putString("${id}_theme", p.theme)
             .putString("${id}_mode", p.mode)
             .putFloat("${id}_fontSize", p.fontSize)
+            .putString("${id}_fontFamily", p.fontFamily)
             .putFloat("${id}_lineHeight", p.lineHeight)
             .putFloat("${id}_paragraphSpacing", p.paragraphSpacing)
             .putFloat("${id}_margin", p.margin)

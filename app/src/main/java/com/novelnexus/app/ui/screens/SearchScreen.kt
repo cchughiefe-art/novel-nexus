@@ -152,7 +152,6 @@ fun SearchScreen(graph: AppGraph, onOpen: (NovelCard) -> Unit) {
                     items(books, key = { "${it.sourceId}:${it.url}" }) { novel ->
                         NovelPosterCard(
                             item = novel,
-                            sourceName = graph.sources.get(novel.sourceId)?.name ?: novel.sourceId,
                             onClick = { onOpen(novel) },
                             modifier = Modifier.fillMaxWidth()
                         )

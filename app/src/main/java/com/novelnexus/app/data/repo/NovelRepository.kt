@@ -25,6 +25,7 @@ class NovelRepository(
     private val chaptersCache = ConcurrentHashMap<String, Timed<List<ChapterRef>>>()
     private val searchCache = ConcurrentHashMap<String, Timed<List<SourceResult<List<NovelCard>>>>>()
     private var latestCache: Timed<List<SourceResult<List<NovelCard>>>>? = null
+    private var popularCache: Timed<List<SourceResult<List<NovelCard>>>>? = null
 
     private fun cacheKey(sourceId: String, url: String) = "$sourceId::$url"
     private fun <T> Timed<T>?.fresh(ttl: Long): T? = if (this != null && System.currentTimeMillis()-at <= ttl) value else null
@@ -58,6 +59,27 @@ class NovelRepository(
         }}.awaitAll()
         if (result.any { !it.data.isNullOrEmpty() }) latestCache=Timed(result)
         result
+    }
+
+    suspend fun popular(): List<SourceResult<List<NovelCard>>> = coroutineScope {
+        popularCache.fresh(120_000L)?.let { return@coroutineScope it }
+        val result = sources.enabled().filter { it.supportsPopular }.map { source -> async {
+            runCatching { source.popular() }.fold(
+                onSuccess = { SourceResult<List<NovelCard>>(source.id, it, null) },
+                onFailure = { SourceResult<List<NovelCard>>(source.id, null, it.message ?: "Source failed") }
+            )
+        }}.awaitAll()
+        if (result.any { !it.data.isNullOrEmpty() }) popularCache = Timed(result)
+        result
+    }
+
+    suspend fun browseGenre(genre: String): List<SourceResult<List<NovelCard>>> = coroutineScope {
+        sources.enabled().filter { it.supportsGenres }.map { source -> async {
+            runCatching { source.browseGenre(genre) }.fold(
+                onSuccess = { SourceResult<List<NovelCard>>(source.id, it, null) },
+                onFailure = { SourceResult<List<NovelCard>>(source.id, null, it.message ?: "Source failed") }
+            )
+        }}.awaitAll()
     }
 
     suspend fun novel(sourceId: String, url: String): NovelDetails {

@@ -67,7 +67,6 @@ private fun Cover(
 @Composable
 fun NovelPosterCard(
     item: NovelCard,
-    sourceName: String,
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -98,20 +97,12 @@ fun NovelPosterCard(
                 overflow = TextOverflow.Ellipsis
             )
         }
-        Text(
-            sourceName,
-            style = MaterialTheme.typography.labelLarge,
-            color = MaterialTheme.colorScheme.primary,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis
-        )
     }
 }
 
 @Composable
 fun NovelRowCard(
     item: NovelCard,
-    sourceName: String,
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -158,12 +149,6 @@ fun NovelRowCard(
                         overflow = TextOverflow.Ellipsis
                     )
                 }
-                Spacer(Modifier.height(8.dp))
-                Text(
-                    sourceName,
-                    style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.primary
-                )
             }
         }
     }
@@ -172,7 +157,6 @@ fun NovelRowCard(
 @Composable
 fun HeroNovelCard(
     item: NovelCard,
-    sourceName: String,
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -211,7 +195,7 @@ fun HeroNovelCard(
                 .padding(20.dp)
         ) {
             Text(
-                "FEATURED · $sourceName",
+                "FEATURED",
                 style = MaterialTheme.typography.labelLarge,
                 color = androidx.compose.ui.graphics.Color(0xFFFFC5B6)
             )
@@ -255,6 +239,6 @@ fun SectionTitle(
 }
 
 @Composable
-fun NovelCardView(item: NovelCard, sourceName: String, onClick: () -> Unit) {
-    NovelRowCard(item = item, sourceName = sourceName, onClick = onClick)
+fun NovelCardView(item: NovelCard, onClick: () -> Unit) {
+    NovelRowCard(item = item, onClick = onClick)
 }

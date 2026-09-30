@@ -167,6 +167,11 @@ fun ReaderScreen(
     val scope = rememberCoroutineScope()
     val prefs by graph.readerPreferences.effectiveFlow(novelUrl).collectAsState(initial = ReaderPrefs())
     val colors = palette(prefs.theme)
+    val readingFont = when (prefs.fontFamily) {
+        "SANS" -> FontFamily.SansSerif
+        "MONO" -> FontFamily.Monospace
+        else -> FontFamily.Serif
+    }
 
     var content by remember(chapterUrl) { mutableStateOf<ChapterContent?>(null) }
     var chapters by remember(novelUrl) { mutableStateOf<List<ChapterRef>>(emptyList()) }
@@ -454,7 +459,6 @@ fun ReaderScreen(
                             val ref=ChapterRef(sourceId,novelUrl,title,chapterUrl,index)
                             runCatching { graph.repository.chapterLoad(ref) }.onSuccess { content=it.content; origin=it.origin }.onFailure { error=it.message }
                         }},modifier=Modifier.padding(top=12.dp)) { Text("Retry") }
-                        Text("Source: $sourceId",color=colors.muted,modifier=Modifier.padding(top=8.dp))
                     }
                 }
                 prefs.mode=="PAGED" -> HorizontalPager(
@@ -462,9 +466,9 @@ fun ReaderScreen(
                     modifier=Modifier.weight(1f).fillMaxWidth().then(readerGestureModifier)
                 ) { page ->
                     LazyColumn(Modifier.fillMaxSize().padding(horizontal=prefs.margin.dp)) {
-                        if(page==0) item { Text(content!!.title,color=colors.fg,fontFamily=FontFamily.Serif,fontWeight=FontWeight.Bold,fontSize=(prefs.fontSize+5).sp,modifier=Modifier.padding(vertical=24.dp)) }
+                        if(page==0) item { Text(content!!.title,color=colors.fg,fontFamily=readingFont,fontWeight=FontWeight.Bold,fontSize=(prefs.fontSize+5).sp,modifier=Modifier.padding(vertical=24.dp)) }
                         itemsIndexed(pages[page]) { _, paragraph ->
-                            Text(paragraph,color=colors.fg,fontFamily=FontFamily.Serif,fontSize=prefs.fontSize.sp,lineHeight=(prefs.fontSize*prefs.lineHeight).sp,modifier=Modifier.padding(vertical=prefs.paragraphSpacing.dp))
+                            Text(paragraph,color=colors.fg,fontFamily=readingFont,fontSize=prefs.fontSize.sp,lineHeight=(prefs.fontSize*prefs.lineHeight).sp,modifier=Modifier.padding(vertical=prefs.paragraphSpacing.dp))
                         }
                     }
                 }
@@ -473,10 +477,10 @@ fun ReaderScreen(
                     modifier=Modifier.weight(1f).fillMaxWidth().then(readerGestureModifier)
                 ) {
                     item {
-                        Text(content!!.title,color=colors.fg,fontFamily=FontFamily.Serif,fontWeight=FontWeight.Bold,fontSize=(prefs.fontSize+5).sp,lineHeight=(prefs.fontSize+12).sp,modifier=Modifier.padding(horizontal=prefs.margin.dp,vertical=24.dp))
+                        Text(content!!.title,color=colors.fg,fontFamily=readingFont,fontWeight=FontWeight.Bold,fontSize=(prefs.fontSize+5).sp,lineHeight=(prefs.fontSize+12).sp,modifier=Modifier.padding(horizontal=prefs.margin.dp,vertical=24.dp))
                     }
                     itemsIndexed(paragraphs,key={i,_->i}) { _, paragraph ->
-                        Text(paragraph,color=colors.fg,fontFamily=FontFamily.Serif,fontSize=prefs.fontSize.sp,lineHeight=(prefs.fontSize*prefs.lineHeight).sp,modifier=Modifier.padding(horizontal=prefs.margin.dp,vertical=prefs.paragraphSpacing.dp))
+                        Text(paragraph,color=colors.fg,fontFamily=readingFont,fontSize=prefs.fontSize.sp,lineHeight=(prefs.fontSize*prefs.lineHeight).sp,modifier=Modifier.padding(horizontal=prefs.margin.dp,vertical=prefs.paragraphSpacing.dp))
                     }
                     item {
                         Column(Modifier.fillMaxWidth().padding(18.dp),horizontalAlignment=Alignment.CenterHorizontally) {
@@ -561,6 +565,16 @@ fun ReaderScreen(
                 }
 
                 SettingSection("Appearance") {
+                    Text("Reading font",fontWeight=FontWeight.SemiBold)
+                    Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
+                        listOf("Serif" to "SERIF", "Sans" to "SANS", "Mono" to "MONO").forEach { (label, value) ->
+                            ReaderChoice(label,prefs.fontFamily==value) {
+                                scope.launch {
+                                    graph.readerPreferences.updateForBook(novelUrl) { it.copy(fontFamily=value) }
+                                }
+                            }
+                        }
+                    }
                     Text("Theme",fontWeight=FontWeight.SemiBold)
                     Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
                         ReaderChoice("AMOLED",prefs.theme=="AMOLED") {
