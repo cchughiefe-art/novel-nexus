@@ -10,6 +10,7 @@ import com.novelnexus.app.data.repo.NovelRepository
 import com.novelnexus.app.source.freewebnovel.FreeWebNovelSource
 import com.novelnexus.app.source.lightnovelpub.LightNovelPubSource
 import com.novelnexus.app.source.novelfull.NovelFullSource
+import com.novelnexus.app.source.novelfullparse.NovelNexusProvider
 
 class NovelNexusApp : Application() {
     lateinit var graph: AppGraph
@@ -24,6 +25,7 @@ class NovelNexusApp : Application() {
             listOf(
                 NovelFullSource("novelfull-com", "NovelFull.com", "https://novelfull.com", http),
                 NovelFullSource("novelfull-net", "NovelFull.net", "https://novelfull.net", http),
+                NovelNexusProvider(this),
                 FreeWebNovelSource(http),
                 LightNovelPubSource(http)
             )
